@@ -96,11 +96,50 @@ static void shim_global_remove(void *data, struct wl_proxy *reg, uint32_t name) 
 static const struct wl_registry_listener_compat shim_listener = {shim_global,
                                                                  shim_global_remove};
 
+// wl_keyboard listener wrap: turns the remote's Back into popRoute (below) and,
+// with <app dir>/compat-log-keys, logs the raw evdev key codes the compositor
+// delivers before the embedder maps them.
+struct shim_keyboard_listener {
+  void (*keymap)(void *, struct wl_proxy *, uint32_t, int32_t, uint32_t);
+  void (*enter)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *, void *);
+  void (*leave)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *);
+  void (*key)(void *, struct wl_proxy *, uint32_t, uint32_t, uint32_t, uint32_t);
+  void (*modifiers)(void *, struct wl_proxy *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+  void (*repeat_info)(void *, struct wl_proxy *, int32_t, int32_t);
+};
+static struct shim_keyboard_listener g_kb_user, g_kb_wrap;
+static int g_kb_log, g_back_as_key;
+static void shim_send_pop_route(void);
+#define KEY_REMOTE_BACK 412 /* KEY_PREVIOUS: the remote's Back on webOS <= 25 */
+static void shim_kb_key(void *d, struct wl_proxy *kb, uint32_t serial, uint32_t time,
+                        uint32_t key, uint32_t state) {
+  if (g_kb_log) fprintf(stderr, "[compat] wl_keyboard key evdev=%u state=%u\n", key, state);
+  // LG's embedder maps the remote's Back to an Escape key event, which Flutter
+  // does not treat as navigation. Deliver it the way Android does instead: a
+  // popRoute message on flutter/navigation (Navigator pops; on the last route
+  // the framework calls SystemNavigator.pop). compat-back-as-key opts out.
+  if (key == KEY_REMOTE_BACK && !g_back_as_key) {
+    if (state == 1) shim_send_pop_route();
+    return;
+  }
+  if (g_kb_user.key) g_kb_user.key(d, kb, serial, time, key, state);
+}
+
 __attribute__((visibility("default")))
 int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
                           void *data) {
   static int (*real)(struct wl_proxy *, void (**)(void), void *);
   if (!real) real = dlsym(RTLD_NEXT, "wl_proxy_add_listener");
+  if (strcmp(wl_proxy_get_class(proxy), "wl_keyboard") == 0) {
+    g_kb_log = shim_app_file_exists("compat-log-keys");
+    g_back_as_key = shim_app_file_exists("compat-back-as-key");
+    // wl_keyboard v1-v3 has 5 events, v4+ adds repeat_info; copy what exists.
+    size_t n = wl_proxy_get_version(proxy) >= 4 ? 6 : 5;
+    memcpy(&g_kb_user, implementation, n * sizeof(void *));
+    g_kb_wrap = g_kb_user;
+    g_kb_wrap.key = shim_kb_key;
+    return real(proxy, (void (**)(void))&g_kb_wrap, data);
+  }
   if (strcmp(wl_proxy_get_class(proxy), "wl_registry") == 0) {
     struct shim_registry_wrap *w = malloc(sizeof(*w));  // lives as long as the registry
     w->user = (const void *)implementation;
@@ -266,3 +305,78 @@ int _PmLogMsgKV(PmLogContext_compat ctx, int level, unsigned int flags, const ch
 // libwebp implements it as a plain malloc and pairs it with WebPFree() (which
 // old releases have, as free()), so malloc is equivalent.
 __attribute__((visibility("default"))) void *WebPMalloc(size_t size) { return malloc(size); }
+
+// ---------------------------------------------------------------------------
+// Flutter engine handle, for sending platform messages (popRoute on Back).
+// LG's embedder reaches the engine only through FlutterEngineGetProcAddresses,
+// so wrap the table's Run/Initialize entries to capture the engine handle.
+// Layout from shell/platform/embedder/embedder.h (FlutterEngineProcTable).
+// ---------------------------------------------------------------------------
+typedef void *FlutterEngineHandle;
+typedef int (*EngineStartFn)(size_t, const void *, const void *, void *, FlutterEngineHandle *);
+typedef struct {
+  size_t struct_size;
+  const char *channel;
+  const uint8_t *message;
+  size_t message_size;
+  const void *response_handle;
+} ShimPlatformMessage;
+typedef int (*SendPlatformMessageFn)(FlutterEngineHandle, const ShimPlatformMessage *);
+typedef struct {
+  size_t struct_size;
+  void *CreateAOTData, *CollectAOTData;
+  EngineStartFn Run;
+  void *Shutdown;
+  EngineStartFn Initialize;
+  void *Deinitialize, *RunInitialized, *SendWindowMetricsEvent, *SendPointerEvent,
+      *SendKeyEvent;
+  SendPlatformMessageFn SendPlatformMessage;
+} ShimProcTablePrefix;
+
+static FlutterEngineHandle g_engine;
+static EngineStartFn g_real_run, g_real_initialize;
+static SendPlatformMessageFn g_send_platform_message;
+
+static int shim_engine_run(size_t v, const void *cfg, const void *args, void *ud,
+                           FlutterEngineHandle *out) {
+  int r = g_real_run(v, cfg, args, ud, out);
+  if (r == 0 && out) g_engine = *out;
+  return r;
+}
+static int shim_engine_initialize(size_t v, const void *cfg, const void *args, void *ud,
+                                  FlutterEngineHandle *out) {
+  int r = g_real_initialize(v, cfg, args, ud, out);
+  if (r == 0 && out) g_engine = *out;
+  return r;
+}
+
+__attribute__((visibility("default")))
+int FlutterEngineGetProcAddresses(ShimProcTablePrefix *table) {
+  static int (*real)(ShimProcTablePrefix *);
+  if (!real) real = dlsym(RTLD_NEXT, "FlutterEngineGetProcAddresses");
+  int r = real ? real(table) : 1;
+  if (r == 0 && table && table->struct_size >= sizeof(ShimProcTablePrefix)) {
+    g_send_platform_message = table->SendPlatformMessage;
+    if (table->Run && table->Run != shim_engine_run) {
+      g_real_run = table->Run;
+      table->Run = shim_engine_run;
+    }
+    if (table->Initialize && table->Initialize != shim_engine_initialize) {
+      g_real_initialize = table->Initialize;
+      table->Initialize = shim_engine_initialize;
+    }
+  }
+  return r;
+}
+
+static void shim_send_pop_route(void) {
+  static const char json[] = "{\"method\":\"popRoute\",\"args\":null}";
+  if (!g_engine || !g_send_platform_message) {
+    fprintf(stderr, "[compat] Back: engine not ready, ignored\n");
+    return;
+  }
+  ShimPlatformMessage msg = {sizeof(msg), "flutter/navigation", (const uint8_t *)json,
+                             sizeof(json) - 1, NULL};
+  int r = g_send_platform_message(g_engine, &msg);
+  if (g_kb_log) fprintf(stderr, "[compat] Back -> popRoute (result %d)\n", r);
+}
