@@ -65,10 +65,14 @@ EXPORT void SDL_GetWindowSize(void *w, int *pw, int *ph) {
   if (ph) *ph = 1080;
 }
 
+// Audio-only players (audioplayers) call plain NDL_MediaInit(), which still
+// asks SDL for a window on old firmware and crashes on NULL. Without a
+// Flutter video window, hand out a placeholder ID: audio needs no surface.
+#define NO_WINDOW_ID "_compat_audio_only_"
 EXPORT const char *SDL_webOSCreateExportedWindow(int type) {
-  fprintf(stderr, "[ndl-compat] SDL_webOSCreateExportedWindow(type=%d) -> %s\n", type,
-          g_window_id[0] ? g_window_id : "(none yet)");
-  return g_window_id[0] ? strdup(g_window_id) : NULL;
+  const char *id = g_window_id[0] ? g_window_id : NO_WINDOW_ID;
+  fprintf(stderr, "[ndl-compat] SDL_webOSCreateExportedWindow(type=%d) -> %s\n", type, id);
+  return strdup(id);
 }
 EXPORT int SDL_webOSSetExportedWindow(const char *id, SDL_Rect_compat *src, SDL_Rect_compat *dst) {
   (void)src;

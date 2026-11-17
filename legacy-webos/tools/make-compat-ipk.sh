@@ -79,9 +79,11 @@ EXE="$STAGE/$MAIN"
 "$PATCHELF" --force-rpath --set-rpath '$ORIGIN/lib/compat:$ORIGIN/lib:$ORIGIN' "$EXE"
 "$PATCHELF" --add-needed libwl-marshal-flags-shim.so --add-needed libpthread.so.0 \
             --add-needed libdl.so.2 --add-needed librt.so.1 "$EXE"
-# Video: webOS <= 25 NDL needs an SDL window. If the app bundles LG's
-# video_player plugin, add the NDL/SDL compat library (SONAME libSDL2-2.0.so.0).
-if ls "$STAGE"/lib/libvideo_player*_plugin.so >/dev/null 2>&1; then
+# Media: on webOS <= 25, NDL_MediaInit() asks SDL for an exported window, even
+# for audio-only playback. If any bundled library links libNDL_media
+# (video_player, audioplayers, ...), add the NDL/SDL compat library
+# (SONAME libSDL2-2.0.so.0) so NDL does not load the system SDL.
+if grep -l "libNDL_media.so" "$STAGE"/lib/*.so >/dev/null 2>&1; then
   cp "$FW/compat/ndl-sdl-shim/out/libSDL2-2.0.so.0" "$STAGE/lib/compat/"
   "$PATCHELF" --add-needed libSDL2-2.0.so.0 "$EXE"
 fi
