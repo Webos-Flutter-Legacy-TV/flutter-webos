@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Build the compat shims with the webosbrew toolchain (glibc 2.12 baseline, so
+# the shims themselves load on every webOS release).
+set -euo pipefail
+FW="$(cd "$(dirname "$0")/.." && pwd)"
+CC="$FW/toolchains/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-linux-gnueabi-gcc"
+[ -x "$CC" ] || { echo "webosbrew toolchain missing; run ./setup.sh" >&2; exit 1; }
+mkdir -p "$FW/compat/wayland-shim/out" "$FW/compat/ndl-sdl-shim/out"
+"$CC" -O2 -fPIC -shared -Wall -Wextra \
+  -o "$FW/compat/wayland-shim/out/libwl-marshal-flags-shim.so" \
+  "$FW/compat/wayland-shim/wl_marshal_flags_shim.c" -lwayland-client -ldl
+"$CC" -O2 -fPIC -shared -Wall -Wextra -Wl,-soname,libSDL2-2.0.so.0 \
+  -o "$FW/compat/ndl-sdl-shim/out/libSDL2-2.0.so.0" \
+  "$FW/compat/ndl-sdl-shim/ndl_sdl_compat.c" -ldl
+"$CC" -O2 -Wall -o "$FW/tools/tv-key/tv-key" "$FW/tools/tv-key/tv-key.c"
