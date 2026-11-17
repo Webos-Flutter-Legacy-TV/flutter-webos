@@ -16,6 +16,13 @@ Developer Mode:
 | DNS, HTTP, HTTPS (certificate verification) | Works |
 | path_provider, shared_preferences, sqflite | Works; data survives reinstall |
 | video_player (network MP4) | Works: play, pause, seek, 2x, resized window, two players, Home/resume |
+| audioplayers (network MP3) | Works |
+| webos_service_bridge (Luna calls + subscriptions), webos_app_manager, webos_display | Works |
+| device_info_plus (`webosInfo`), package_info_plus, connectivity_plus | Works |
+| url_launcher (opens the TV browser), webos_image_texture | Works |
+| gamepads, flutter_keyboard_visibility, custom_mouse_cursor | Work (API calls; no gamepad attached) |
+| flutter_secure_storage | **Does not work**: see Known issues |
+| Not tested | audioplayers_soloud, video_player_drm, flutterfire |
 | Performance | 50-60 fps for lists and light UI with Impeller; heavy shadow/opacity grids are slow |
 
 ## How it works
@@ -25,7 +32,8 @@ order, everything that stopped it from starting on webOS 6:
 
 | Problem on older webOS | Fix |
 | --- | --- |
-| LG's binaries need glibc 2.38 / `GLIBCXX_3.4.32`; the NDK's glibc also needs kernel >= 5.15 (`statx`) | Bundle Debian armel glibc 2.41 + libstdc++ (built for kernel >= 3.2) in `lib/compat/` |
+| LG's binaries need glibc 2.38; the NDK's own glibc needs kernel >= 5.15 (`statx`) | Bundle Debian armel glibc 2.41 (built for kernel >= 3.2) in `lib/compat/` |
+| LG's binaries need `GLIBCXX_3.4.32` | Bundle the NDK's own libstdc++/libgcc_s/libatomic (GCC 13, ARMv7); Debian's armel libstdc++ targets ARMv5TE and lacks parts of `std::future` |
 | The app must be the `main` executable, or webOS denies its Luna bus permissions | No wrapper script: patch the binary's ELF interpreter to the bundled loader |
 | The devmode jailer sets `LD_LIBRARY_PATH`, which overrides `RUNPATH` | Use `DT_RPATH` |
 | System libraries would pull in the TV's old libpthread/libdl/librt | Bundled ones added as direct `NEEDED` entries so they load first |
@@ -34,7 +42,8 @@ order, everything that stopped it from starting on webOS 6:
 | `wl_webos_shell` v2 requested, compositor offers v1 | Shim records advertised versions and clamps binds |
 | Back key never delivered to the app | Shim sets `_WEBOS_ACCESS_POLICY_KEYS_BACK` on the shell surface |
 | `libwayland-egl.so.1` missing | Retarget to the vendor `libwayland-egl.so.0` (same API) |
-| NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its video window from SDL | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window (added only when the app uses video_player) |
+| NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its window from SDL, even for audio | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window, or a placeholder for audio-only players (added when any bundled library links `libNDL_media`) |
+| libwebp < 1.1 lacks `WebPMalloc` (webos_image_texture, linked `-z now`, so the app would not start) | Wayland shim also exports `WebPMalloc` |
 
 The video_player fixes that are not webOS-6 specific (loop position,
 position after Home, volume error at startup) are in
@@ -97,6 +106,10 @@ in `compat.log` (next to the installed binary):
 
 - `tests/compat_test`: environment, network, storage plugins, text layout and
   rendering performance; results in `compat_results.log`.
+- `tests/plugins_test`: one check per remaining LG plugin (Luna bridge, app
+  manager, display, device/package info, connectivity, secure storage,
+  gamepads, keyboard visibility, mouse cursor, audioplayers, image texture,
+  url_launcher last because it opens the browser).
 - `tests/video_test`: scripted video_player checks, using the patched plugin
   from [Webos-Flutter-Legacy-TV/plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins).
 
@@ -108,6 +121,14 @@ in `compat.log` (next to the installed binary):
 - **Video**: after a seek, playback resumes 4-7 s later; switching 2x back to
   1x makes the reported position jump back a few seconds; with two players
   only the newest is visible; per-stream volume is not supported by LG's plugin.
+- **flutter_secure_storage**: LG's embedder encrypts through
+  `com.webos.service.keymanager3` (begin/finish/generateKey), which webOS 6
+  does not have; it has `keymanager2` (generate/encrypt/decrypt). Writes are
+  silently dropped and reads return null. Needs a keymanager2 fallback.
+- **device_info_plus**: use `DeviceInfoWebOSPlugin().webosInfo`; the generic
+  `DeviceInfoPlugin().deviceInfo` casts to `LinuxDeviceInfo` and throws.
+- An uncaught `_TypeError ... is not a subtype of PlatformException` is logged
+  once at startup of the plugins test; its source plugin is not yet known.
 - `PlatformDispatcher.displays.first.refreshRate` reports 16666 (the embedder
   passes the frame period in microseconds).
 - Only webOS 6.5.3 has been tested. Releases older than webOS 4 may need more
