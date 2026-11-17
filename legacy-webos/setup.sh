@@ -16,7 +16,7 @@ NDK_VERSION=11.2.0
 NDK_URL="https://github.com/lg-flutter-webos/ndk/releases/download/$NDK_VERSION/webos-ndk-flutter-starfish-x86_64-ca9v1-$NDK_VERSION.sh"
 DEBIAN_MIRROR="https://deb.debian.org/debian"
 DEBIAN_SUITE=trixie
-DEBIAN_PACKAGES="libc6 libstdc++6 libgcc-s1 libatomic1"
+DEBIAN_PACKAGES="libc6"
 
 step() { printf '\n== %s\n' "$*"; }
 
@@ -28,7 +28,7 @@ if [ ! -x "$TC/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-lin
   (cd "$TC/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot" && ./relocate-sdk.sh >/dev/null)
 fi
 
-step "Debian $DEBIAN_SUITE armel runtime: glibc + libstdc++ bundled into compat IPKs"
+step "Debian $DEBIAN_SUITE armel glibc: bundled into compat IPKs"
 # armel = the same soft-float ABI as webOS userspace; Debian's glibc is built
 # for kernel >= 3.2 (LG's NDK glibc needs >= 5.15, which old TVs do not have).
 if [ ! -e "$DL/debian-armel/root/usr/lib/arm-linux-gnueabi/libc.so.6" ]; then

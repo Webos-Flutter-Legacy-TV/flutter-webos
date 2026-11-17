@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Repackage a flutter-webos (webOS 26) build so it runs on older webOS TVs
-# ("option B"): bundle glibc 2.39 + libstdc++ from the LG NDK sysroot and a
+# ("option B"): bundle a newer glibc + the NDK's C++ runtime and a
 # Wayland >=1.20 shim, and start the app through the bundled dynamic loader.
 #
 # Usage: tools/make-compat-ipk.sh <flutter-app-dir> [release|profile|debug]
@@ -9,10 +9,15 @@ set -euo pipefail
 FW="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$(cd "$1" && pwd)"
 MODE="${2:-release}"
-# Runtime to bundle. LG's NDK glibc is built for kernel >= 5.15 (uses statx etc.)
-# and fails on older TVs with ENOSYS, so default to Debian 13 armel
-# (glibc 2.41, min kernel 3.2; libstdc++ GCC 14, GLIBCXX_3.4.33).
-SYSROOT_LIB="${COMPAT_RUNTIME_LIB:-$FW/downloads/debian-armel/root/usr/lib/arm-linux-gnueabi}"
+# Runtime to bundle.
+# - glibc: LG's NDK glibc is built for kernel >= 5.15 (uses statx etc.) and
+#   fails on older TVs with ENOSYS, so use Debian 13 armel glibc 2.41
+#   (same soft-float ABI, min kernel 3.2).
+# - C++ runtime: from the LG NDK (GCC 13, ARMv7), the build LG's binaries were
+#   linked against. Debian's armel libstdc++ targets ARMv5TE and lacks part of
+#   std::future (e.g. __future_base::_Result_base), which plugins use.
+GLIBC_LIB="${COMPAT_GLIBC_LIB:-$FW/downloads/debian-armel/root/usr/lib/arm-linux-gnueabi}"
+CXX_LIB="${COMPAT_CXX_LIB:-$FW/toolchains/lg-ndk-11.2.0/sysroots/ca9v1-webosmllib32-linux-gnueabi/usr/lib}"
 SHIM="$FW/compat/wayland-shim/out/libwl-marshal-flags-shim.so"
 PATCHELF="$FW/toolchains/pyenv/bin/patchelf"
 ARES_PACKAGE="$FW/toolchains/ares/node_modules/.bin/ares-package"
@@ -34,9 +39,12 @@ mkdir -p "$STAGE/lib/compat"
 
 # glibc + C++ runtime (OSS components).
 for f in ld-linux.so.3 libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 \
-         libresolv.so.2 libutil.so.1 libanl.so.1 libnss_files.so.2 libnss_dns.so.2 \
-         libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
-  cp -L "$SYSROOT_LIB/$f" "$STAGE/lib/compat/$f"
+         libresolv.so.2 libutil.so.1 libanl.so.1 libnss_files.so.2 libnss_dns.so.2; do
+  cp -L "$GLIBC_LIB/$f" "$STAGE/lib/compat/$f"
+done
+[ -e "$CXX_LIB/libstdc++.so.6" ] || { echo "LG NDK not found ($CXX_LIB); run WEBOS_NDK_ACCEPT_EULA=1 ./setup.sh" >&2; exit 1; }
+for f in libstdc++.so.6 libgcc_s.so.1 libatomic.so.1; do
+  cp -L "$CXX_LIB/$f" "$STAGE/lib/compat/$f"
 done
 cp "$SHIM" "$STAGE/lib/compat/"
 
