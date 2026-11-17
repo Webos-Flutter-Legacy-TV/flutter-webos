@@ -35,11 +35,11 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   video_player: ^2.9.0
   # Webos-Flutter-Legacy-TV fork: LG's plugin plus the loop, lifecycle and
-  # volume fixes (branch webos-legacy-fixes).
+  # volume fixes.
   video_player_webos:
     git:
       url: https://github.com/Webos-Flutter-Legacy-TV/plugins.git
-      ref: webos-legacy-fixes
+      ref: main
       path: packages/video_player
   cupertino_icons: ^1.0.8
 

@@ -37,8 +37,8 @@ order, everything that stopped it from starting on webOS 6:
 | NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its video window from SDL | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window (added only when the app uses video_player) |
 
 The video_player fixes that are not webOS-6 specific (loop position,
-position after Home, volume error at startup) are on the `webos-legacy-fixes`
-branch of [Webos-Flutter-Legacy-TV/plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins).
+position after Home, volume error at startup) are in
+[Webos-Flutter-Legacy-TV/plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins).
 
 ## Setup
 
@@ -98,8 +98,7 @@ in `compat.log` (next to the installed binary):
 - `tests/compat_test`: environment, network, storage plugins, text layout and
   rendering performance; results in `compat_results.log`.
 - `tests/video_test`: scripted video_player checks, using the patched plugin
-  from the `webos-legacy-fixes` branch of
-  [Webos-Flutter-Legacy-TV/plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins).
+  from [Webos-Flutter-Legacy-TV/plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins).
 
 ## Known issues
 
