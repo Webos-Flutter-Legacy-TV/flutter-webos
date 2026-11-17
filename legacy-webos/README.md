@@ -12,7 +12,7 @@ Developer Mode:
 | --- | --- |
 | Rendering, Material UI | Works, 1920x1080 |
 | Remote D-pad / OK | Works |
-| Remote Back | Not verified yet (see Known issues) |
+| Remote Back | Works: pops the current route; on the last route the app exits |
 | DNS, HTTP, HTTPS (certificate verification) | Works |
 | path_provider, shared_preferences, sqflite | Works; data survives reinstall |
 | video_player (network MP4) | Works: play, pause, seek, 2x, resized window, two players, Home/resume |
@@ -41,6 +41,7 @@ order, everything that stopped it from starting on webOS 6:
 | `wl_proxy_marshal_flags` missing (Wayland < 1.20) | `compat/wayland-shim` implements it on the 1.11 API |
 | `wl_webos_shell` v2 requested, compositor offers v1 | Shim records advertised versions and clamps binds |
 | Back key never delivered to the app | Shim sets `_WEBOS_ACCESS_POLICY_KEYS_BACK` on the shell surface |
+| The embedder turns the remote's Back (evdev 412) into an Escape key, which Flutter does not treat as navigation | Shim sends `popRoute` on `flutter/navigation` instead, like Android, using the engine handle captured from `FlutterEngineGetProcAddresses` |
 | `libwayland-egl.so.1` missing | Retarget to the vendor `libwayland-egl.so.0` (same API) |
 | NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its window from SDL, even for audio | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window, or a placeholder for audio-only players (added when any bundled library links `libNDL_media`) |
 | libwebp < 1.1 lacks `WebPMalloc` (webos_image_texture, linked `-z now`, so the app would not start) | Wayland shim also exports `WebPMalloc` |
@@ -99,7 +100,9 @@ the key is not `~/.ssh/lg_webos`.
 
 Debug switches: an empty file in an app's `webos/meta/` turns on extra output
 in `compat.log` (next to the installed binary):
-`compat-log-globals` (Wayland globals), `compat-log-ndl` (raw NDL media events),
+`compat-log-globals` (Wayland globals), `compat-log-keys` (raw Wayland key
+codes), `compat-back-as-key` (deliver Back as the embedder's key event instead
+of `popRoute`), `compat-log-ndl` (raw NDL media events),
 `compat-log-pmlog` (plugin PmLog messages), `compat-swap0` (EGL swap interval 0).
 
 ## Test apps
@@ -110,12 +113,13 @@ in `compat.log` (next to the installed binary):
   manager, display, device/package info, connectivity, secure storage,
   gamepads, keyboard visibility, mouse cursor, audioplayers, image texture,
   url_launcher last because it opens the browser).
+- `tests/input_test`: logs every key event, system back (`didPopRoute`) and
+  lifecycle change; starts on a second page so Back can be checked.
 - `tests/video_test`: scripted video_player checks, using the patched plugin
   from [Webos-Flutter-Legacy-TV/plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins).
 
 ## Known issues
 
-- **Back key**: the shim requests it, but delivery has not been confirmed yet.
 - **Frame pacing**: about 14-17 ms of each frame is spent waiting in the
   raster thread, so light scenes run at 50-55 fps rather than 60.
 - **Video**: after a seek, playback resumes 4-7 s later; switching 2x back to
