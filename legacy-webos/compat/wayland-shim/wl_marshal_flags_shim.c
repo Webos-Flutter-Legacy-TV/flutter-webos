@@ -257,3 +257,12 @@ int _PmLogMsgKV(PmLogContext_compat ctx, int level, unsigned int flags, const ch
   }
   return real ? real(ctx, level, flags, msgid, kv_count, check_keywords, check_formats, "%s", buf) : 0;
 }
+
+// ---------------------------------------------------------------------------
+// Missing-symbol backports for system libraries older than LG's NDK.
+// ---------------------------------------------------------------------------
+// libwebp < 1.1 (webOS 6) lacks WebPMalloc(); webos_image_texture calls it and
+// the plugin is linked with -z now, so the app would not start at all.
+// libwebp implements it as a plain malloc and pairs it with WebPFree() (which
+// old releases have, as free()), so malloc is equivalent.
+__attribute__((visibility("default"))) void *WebPMalloc(size_t size) { return malloc(size); }
