@@ -1,0 +1,21 @@
+{
+    "id": "com.flutter.app.drm-test",
+    "version": "1.0.0",
+    "vendor": "LG Electronics",
+    "type": "native",
+    "main": "drm_test",
+    "title": "Flutter drm_test app",
+    "icon": "icon.png",
+    "iconColor": "#ffffff",
+    "largeIcon": "icon.png",
+    "handlesRelaunch": true,
+    "visible": true,
+    "defaultWindowType": "card",
+    "trustLevel": "default",
+    "locationHint": "none",
+    "noSplashOnLaunch": true,
+    "spinnerOnLaunch": false,
+    "transparent": true,
+    "uiRevision": 2,
+    "requiredACG": []
+}
