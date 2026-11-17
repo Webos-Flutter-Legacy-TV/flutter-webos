@@ -143,3 +143,18 @@ EXPORT int NDL_MediaSubscribeEvents(ndl_cb cb) {
   fprintf(stderr, "[ndl-compat] NDL_MediaSubscribeEvents(slot %d) wrapped\n", slot);
   return real ? real(cb ? g_tramps[slot] : NULL) : -1;
 }
+
+// ------------------------------------------------------ DRM (webOS 26) ----
+// webOS 26 NDL relays app-fetched DRM licences with NDL_MediaSetDrmOperation
+// (licence-callback DRM). Older NDL does not have it, and video_player_drm is
+// linked -z now, so without this symbol the app would not start. Report
+// failure: the licence-callback path is unavailable, licence-URL DRM is not
+// affected.
+EXPORT int NDL_MediaSetDrmOperation(const char *system_id, const char *drm_data,
+                                    const char *drm_msg_type, const char *service,
+                                    const char *kid, const char *session_id, int request_id) {
+  (void)drm_data; (void)service; (void)kid; (void)request_id;
+  fprintf(stderr, "[ndl-compat] NDL_MediaSetDrmOperation(%s, %s, session %s): not on this firmware\n",
+          system_id ? system_id : "", drm_msg_type ? drm_msg_type : "", session_id ? session_id : "");
+  return -1;
+}
