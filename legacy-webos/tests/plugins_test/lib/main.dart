@@ -13,7 +13,10 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:custom_mouse_cursor/custom_mouse_cursor.dart';
 import 'package:device_info_plus_webos/device_info_plus_webos.dart';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:gamepads/gamepads.dart';
@@ -80,7 +83,55 @@ class _PluginsPageState extends State<PluginsPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _run());
   }
 
+  // Probe mode (<app dir>/km_probe exists): log raw keymanager2 replies, to
+  // learn its API on firmware without keymanager3.
+  Future<void> _kmProbe() async {
+    const ch = MethodChannel('webOS/luna-service2/request', JSONMethodCodec());
+    Future<dynamic> call(String m, Map<String, dynamic> p) async {
+      try {
+        // Same fields webos_service_bridge sends; the embedder requires them all.
+        final uri = 'luna://com.webos.service.keymanager2/$m';
+        final r = await ch.invokeMethod<dynamic>('callOneReply', {
+          'uri': uri, 'payload': p, 'hashCode': '$uri${p.hashCode}'.hashCode,
+          'optHashCode': p.hashCode, 'serviceName': '',
+        }).timeout(const Duration(seconds: 5));
+        log('km $m ${jsonEncode(p)} -> ${jsonEncode(r)}');
+        return r;
+      } catch (e) {
+        log('km $m ${jsonEncode(p)} -> EXC $e');
+        return null;
+      }
+    }
+    final plain = base64.encode(utf8.encode('hello world'));
+    await call('remove', {'keyname': 'kmprobe'});
+    final g = await call('generate', {'keyname': 'kmprobe', 'type': 'AES', 'size': 32});
+    if (!(g is Map && g['returnValue'] == true)) {
+      await call('generate', {'keyname': 'kmprobe', 'type': 'AES', 'size': 16});
+    }
+    await call('getAttrs', {'keyname': 'kmprobe'});
+    for (final opts in [
+      {'mode': 'CBC', 'padding': 'PKCS7'},
+      {'mode': 'ECB', 'padding': 'PKCS7'},
+      {'mode': 'GCM'},
+      <String, String>{},
+    ]) {
+      final r = await call('encrypt', {'keyname': 'kmprobe', 'data': plain, ...opts});
+      if (r is Map && r['returnValue'] == true) {
+        final back = await call('decrypt', {'keyname': 'kmprobe', 'data': r['data'], ...opts,
+          if (r['iv'] != null) 'iv': r['iv']});
+        if (back is Map && back['data'] is String) {
+          log('km roundtrip ${jsonEncode(opts)} -> ${utf8.decode(base64.decode(back['data']), allowMalformed: true)}');
+        }
+      }
+    }
+    log('run INFO done');
+  }
+
   Future<void> _run() async {
+    if (File('${File(Platform.resolvedExecutable).parent.path}/km_probe').existsSync()) {
+      await _kmProbe();
+      return;
+    }
     log('run INFO start ${DateTime.now()}');
 
     // ---- webos_service_bridge: Luna calls from Dart
@@ -153,6 +204,12 @@ class _PluginsPageState extends State<PluginsPage> {
       final gone = await s.read(key: 'k');
       if (back != v || gone != null) throw 'read=$back afterDelete=$gone';
       return 'write/read/delete ok, readAll had ${all.length} key(s)';
+    });
+    await check('secure_storage.persists', () async {
+      const s = FlutterSecureStorage();
+      final previous = await s.read(key: 'persist');
+      await s.write(key: 'persist', value: 'run ${DateTime.now().toIso8601String()}');
+      return 'value from previous run: ${previous ?? '(none: first run)'}';
     });
 
     // ---- gamepads
