@@ -22,7 +22,8 @@ Developer Mode:
 | url_launcher (opens the TV browser), webos_image_texture | Works |
 | gamepads, flutter_keyboard_visibility, custom_mouse_cursor | Work (API calls; no gamepad attached) |
 | flutter_secure_storage | Works via app-sandbox AES-GCM fallback (no system keystore on webOS 6; see Known issues) |
-| Not tested | audioplayers_soloud, video_player_drm, flutterfire |
+| video_player_drm | Clear HLS/DASH and PlayReady (licence URL) play; Widevine does not (see Known issues) |
+| Not tested | audioplayers_soloud, flutterfire |
 | Performance | 50-60 fps for lists and light UI with Impeller; heavy shadow/opacity grids are slow |
 
 ## How it works
@@ -44,6 +45,8 @@ order, everything that stopped it from starting on webOS 6:
 | The embedder turns the remote's Back (evdev 412) into an Escape key, which Flutter does not treat as navigation | Shim sends `popRoute` on `flutter/navigation` instead, like Android, using the engine handle captured from `FlutterEngineGetProcAddresses` |
 | `libwayland-egl.so.1` missing | Retarget to the vendor `libwayland-egl.so.0` (same API) |
 | NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its window from SDL, even for audio | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window, or a placeholder for audio-only players (added when any bundled library links `libNDL_media`) |
+| `drm.licenseUrl` in the load request (webOS 26) is ignored; old releases use a DRM client (`com.webos.service.drm`) | NDL shim translates it: `NDL_MediaDRMLoad`, `NDL_MediaDRMSendMessage` with a `PlayReadyInitiator` (`LA_URL`), then loads with `drm.clientId`; unloads the client at exit |
+| `NDL_MediaSetDrmOperation` missing (video_player_drm, `-z now`) | Shim exports a stub that reports failure (licence-callback DRM unavailable) |
 | libwebp < 1.1 lacks `WebPMalloc` (webos_image_texture, linked `-z now`, so the app would not start) | Wayland shim also exports `WebPMalloc` |
 
 The video_player fixes that are not webOS-6 specific (loop position,
@@ -131,6 +134,13 @@ of `popRoute`), `compat-log-ndl` (raw NDL media events),
   patched plugin in Webos-Flutter-Legacy-TV/plugins detects this and
   encrypts with AES-256-GCM using a key in the app's private data folder
   (mode 0600): safe from other apps, not from root on the TV.
+- **Widevine (video_player_drm) does not play on webOS 6.** The URL pipeline
+  has a Widevine CENC decryptor, but LG documents Widevine Modular only via
+  MSE/EME (an in-app CDM, as LG's Chromium does); every load-option form
+  tried (`WIDEVINE`, `widevine_modular`, DRM client + `widevine+xml`) ends in
+  `552 Encrypted Content`. PlayReady works through the DRM-client adapter.
+  The licence-callback mode (`useLicenseCallback`) is not available.
+- **Streams with VP9/Opus tracks** in DASH fail to load on webOS 6.
 - **device_info_plus**: use `DeviceInfoWebOSPlugin().webosInfo`; the generic
   `DeviceInfoPlugin().deviceInfo` casts to `LinuxDeviceInfo` and throws.
 - `PlatformDispatcher.displays.first.refreshRate` reports 16666 (the embedder

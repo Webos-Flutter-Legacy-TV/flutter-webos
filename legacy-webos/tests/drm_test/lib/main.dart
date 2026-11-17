@@ -4,6 +4,7 @@
 // "STEP <case>" marker while each one plays (for host screenshots).
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:video_player_drm/video_player.dart';
@@ -29,11 +30,32 @@ const cases = <Case>[
   Case('widevine_dash_h264', 'https://storage.googleapis.com/wvmedia/cenc/h264/tears/tears.mpd',
       VideoFormat.dash,
       DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://proxy.uat.widevine.com/proxy?provider=widevine_test')),
+  Case('widevine_callback', 'https://storage.googleapis.com/wvmedia/cenc/h264/tears/tears.mpd',
+      VideoFormat.dash,
+      DrmConfigs(type: DrmType.widevine, licenseCallback: _widevineLicense)),
   Case('playready_smooth',
       'https://test.playready.microsoft.com/smoothstreaming/SSWSS720H264PR/SuperSpeedway_720.ism/Manifest',
       VideoFormat.ss,
       DrmConfigs(type: DrmType.playready, licenseServerUrl: 'https://test.playready.microsoft.com/service/rightsmanager.asmx')),
 ];
+
+// App-side licence acquisition (licenseCallback path): POST the CDM
+// challenge to Google's Widevine test proxy and return the licence bytes.
+Future<Uint8List> _widevineLicense(Uint8List challenge) async {
+  log('licenseCallback: challenge ${challenge.length} bytes');
+  final client = HttpClient();
+  try {
+    final req = await client.postUrl(Uri.parse('https://proxy.uat.widevine.com/proxy?provider=widevine_test'));
+    req.headers.contentType = ContentType('application', 'octet-stream');
+    req.add(challenge);
+    final res = await req.close();
+    final bytes = await res.fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+    log('licenseCallback: HTTP ${res.statusCode}, licence ${bytes.length} bytes');
+    return Uint8List.fromList(bytes);
+  } finally {
+    client.close();
+  }
+}
 
 void log(String line) {
   try {
