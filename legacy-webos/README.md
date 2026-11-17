@@ -21,7 +21,7 @@ Developer Mode:
 | device_info_plus (`webosInfo`), package_info_plus, connectivity_plus | Works |
 | url_launcher (opens the TV browser), webos_image_texture | Works |
 | gamepads, flutter_keyboard_visibility, custom_mouse_cursor | Work (API calls; no gamepad attached) |
-| flutter_secure_storage | **Does not work**: see Known issues |
+| flutter_secure_storage | Works via app-sandbox AES-GCM fallback (no system keystore on webOS 6; see Known issues) |
 | Not tested | audioplayers_soloud, video_player_drm, flutterfire |
 | Performance | 50-60 fps for lists and light UI with Impeller; heavy shadow/opacity grids are slow |
 
@@ -121,14 +121,14 @@ in `compat.log` (next to the installed binary):
 - **Video**: after a seek, playback resumes 4-7 s later; switching 2x back to
   1x makes the reported position jump back a few seconds; with two players
   only the newest is visible; per-stream volume is not supported by LG's plugin.
-- **flutter_secure_storage**: LG's embedder encrypts through
-  `com.webos.service.keymanager3` (begin/finish/generateKey), which webOS 6
-  does not have; it has `keymanager2` (generate/encrypt/decrypt). Writes are
-  silently dropped and reads return null. Needs a keymanager2 fallback.
+- **flutter_secure_storage is not hardware-backed on webOS 6.** LG's embedder
+  encrypts through `com.webos.service.keymanager3`, which webOS 6 lacks, and
+  its `keymanager2` returns the plaintext (16 random bytes + data). The
+  patched plugin in Webos-Flutter-Legacy-TV/plugins detects this and
+  encrypts with AES-256-GCM using a key in the app's private data folder
+  (mode 0600): safe from other apps, not from root on the TV.
 - **device_info_plus**: use `DeviceInfoWebOSPlugin().webosInfo`; the generic
   `DeviceInfoPlugin().deviceInfo` casts to `LinuxDeviceInfo` and throws.
-- An uncaught `_TypeError ... is not a subtype of PlatformException` is logged
-  once at startup of the plugins test; its source plugin is not yet known.
 - `PlatformDispatcher.displays.first.refreshRate` reports 16666 (the embedder
   passes the frame period in microseconds).
 - Only webOS 6.5.3 has been tested. Releases older than webOS 4 may need more
