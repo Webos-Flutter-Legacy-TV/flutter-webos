@@ -205,10 +205,12 @@ unsigned int eglSwapInterval(void *dpy, int interval) {
 }
 
 // ---------------------------------------------------------------------------
-// Dual surface (opt-in: <app dir>/compat-dual-surface). Known issue: with
-// Impeller, a change drawn just before the screen goes static (an image
-// texture appearing, a video hole) can stay invisible; a race exposed by the
-// faster frames, cause not yet found. The Mali driver gives each
+// Dual surface (opt-in: <app dir>/compat-dual-surface). With Impeller, an
+// external texture (webos_image_texture, a pixel-buffer texture) is drawn on
+// the window's own surface but not on the second one (#3; cause not found:
+// same GL context, full redraws do not help). So, as while media is loaded,
+// only the window's own surface is used while any external texture is
+// registered. The Mali driver gives each
 // window surface two buffers and the compositor returns the shown one only
 // after the next is on screen, so eglMakeCurrent blocks ~10 ms per frame and
 // leaves ~7 ms of the 16.7 ms frame for rendering. Give the window a second
@@ -251,6 +253,11 @@ static int dual_media_active(void) {
   }
   return active ? active() : 0;
 }
+// External textures registered with the engine (counted in the proc table
+// wrappers below).
+static int g_ext_textures;
+// Only the window's own surface may be used now.
+static int dual_single_only(void) { return g_ext_textures > 0 || dual_media_active(); }
 // The surface to use now for what the engine calls `surf`.
 static void *dual_map(void *surf) {
   int i = dual_find(surf);
@@ -271,11 +278,11 @@ static int dual_buffer_age(void *surf, void *mapped, int age) {
 }
 
 // For eglMakeCurrent (start of every frame): as dual_map, but go back to the
-// window's own surface at once when media is loaded.
+// window's own surface at once when media is loaded or a texture registered.
 static void *dual_map_make_current(void *surf) {
   int i = dual_find(surf);
   if (i < 0) return surf;
-  if (g_dual[i].cur && dual_media_active()) g_dual[i].cur = 0;
+  if (g_dual[i].cur && dual_single_only()) g_dual[i].cur = 0;
   return g_dual[i].s[g_dual[i].cur];
 }
 // For a present: the pair's surface that is current on this thread (swaps
@@ -328,7 +335,7 @@ static void dual_after_swap(void *surf, void *presented) {
   // The next eglMakeCurrent (the embedder calls it at the start of every
   // frame) maps to the other surface; no surface switch here, while the
   // engine may still be issuing GL work for the frame it just presented.
-  g_dual[i].cur = dual_media_active() ? 0 : g_dual[i].cur ^ 1;
+  g_dual[i].cur = dual_single_only() ? 0 : g_dual[i].cur ^ 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +834,22 @@ static int shim_engine_initialize(size_t v, const void *cfg, const void *args, v
   return r;
 }
 
+// FlutterEngineProcTable.RegisterExternalTexture / UnregisterExternalTexture
+// (15th and 16th entries): count live textures for dual surface.
+typedef int (*TextureFn)(FlutterEngineHandle, int64_t);
+static TextureFn g_real_register_tex, g_real_unregister_tex;
+static int shim_register_tex(FlutterEngineHandle e, int64_t id) {
+  int r = g_real_register_tex(e, id);
+  if (r == 0) __atomic_add_fetch(&g_ext_textures, 1, __ATOMIC_SEQ_CST);
+  return r;
+}
+static int shim_unregister_tex(FlutterEngineHandle e, int64_t id) {
+  int r = g_real_unregister_tex(e, id);
+  if (r == 0 && __atomic_load_n(&g_ext_textures, __ATOMIC_SEQ_CST) > 0)
+    __atomic_sub_fetch(&g_ext_textures, 1, __ATOMIC_SEQ_CST);
+  return r;
+}
+
 __attribute__((visibility("default")))
 int FlutterEngineGetProcAddresses(ShimProcTablePrefix *table) {
   static int (*real)(ShimProcTablePrefix *);
@@ -834,6 +857,12 @@ int FlutterEngineGetProcAddresses(ShimProcTablePrefix *table) {
   int r = real ? real(table) : 1;
   if (r == 0 && table && table->struct_size >= sizeof(ShimProcTablePrefix)) {
     g_send_platform_message = table->SendPlatformMessage;
+    if (table->struct_size >= sizeof(size_t) + 16 * sizeof(void *)) {
+      TextureFn *reg = (TextureFn *)((char *)table + sizeof(size_t) + 14 * sizeof(void *));
+      TextureFn *unreg = reg + 1;
+      if (*reg && *reg != shim_register_tex) { g_real_register_tex = *reg; *reg = shim_register_tex; }
+      if (*unreg && *unreg != shim_unregister_tex) { g_real_unregister_tex = *unreg; *unreg = shim_unregister_tex; }
+    }
     // FlutterEngineProcTable.ScheduleFrame: the 35th entry after struct_size
     // (embedder.h of Flutter 3.38).
     const size_t sched_off = sizeof(size_t) + 34 * sizeof(void *);

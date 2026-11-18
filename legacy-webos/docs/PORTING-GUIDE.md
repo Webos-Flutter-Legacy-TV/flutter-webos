@@ -61,7 +61,7 @@ Optional, as empty files in `webos/meta/`:
 | --- | --- |
 | `compat-widevine-cdm` | Widevine playback through the TV's own CDM (see README, opt-in, L3) |
 | `compat-back-as-key` | Deliver Back as a key event instead of a route pop |
-| `compat-dual-surface` | Faster frames (removes a ~10 ms driver wait per frame); known issue with Impeller, see README |
+| `compat-dual-surface` | Faster frames (removes a ~10 ms driver wait per frame); off automatically while media is loaded or an external texture is registered |
 | `compat-log-*`, `compat-swap0` | Debug output, see README |
 
 ## 4. Plugins

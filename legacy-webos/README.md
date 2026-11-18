@@ -121,11 +121,18 @@ Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
   and the shim schedules a frame after each placement; with both,
   `tests/video_test` showed the video in every stage in 3 of 3 Impeller runs.
   With Skia the small-window stage was still black in 1 of 2 runs.
-- **`compat-dual-surface`** is opt-in: with Impeller, a change drawn just
-  before the screen goes static can stay invisible (a `webos_image_texture`
-  image did not appear in 5 of 5 runs). It does not happen with a single
-  surface or when frames are slower, so it looks like a race exposed by the
-  faster frames; not yet found.
+- **`compat-dual-surface`** is opt-in. With Impeller, an external texture
+  (a `webos_image_texture` image) is drawn on the window's own surface but
+  not on the second one, although both share one GL context and full
+  redraws make no difference (#3; cause not found). The shim therefore uses
+  only the window's own surface while any external texture is registered,
+  as it already does while media is loaded: the image then shows in 3 of 3
+  runs, and apps without textures keep the speed-up (raster ~7 ms instead
+  of ~17 ms).
+- **Delivering vsync once a buffer is free** does not work instead of dual
+  surface: LG's embedder leaves vsync to the engine's timer, and the buffer
+  release arrives only with the vblank and is read only by the Mali driver
+  inside `eglMakeCurrent`, so holding vsync just adds latency (#4).
 
 ## Widevine on older webOS (opt-in)
 
@@ -261,8 +268,8 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
 ## Known issues
 
 - **Frame pacing**: the Mali driver blocks ~10 ms per frame waiting for a
-  buffer. `compat-dual-surface` removes the wait but is opt-in because of an
-  Impeller race (see "Renderer and frame rate"). Even with it, the
+  buffer. `compat-dual-surface` removes the wait (not while media is loaded
+  or an external texture is registered; see "Renderer and frame rate"). Even with it, the
   four-large-tiles scene runs at ~54 fps with no slow raster frames; cause
   not found.
 - **Moved or resized video**: fixed with the plugins fork (see "Renderer and

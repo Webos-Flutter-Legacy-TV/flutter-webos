@@ -63,7 +63,7 @@ dependencies:
       url: https://github.com/Webos-Flutter-Legacy-TV/plugins.git
       ref: main
       path: packages/url_launcher
-  flutter_secure_storage: any
+  flutter_secure_storage: ^9.2.3  # "any" can resolve to 4.x, which bypasses the webOS implementation
   flutter_secure_storage_webos:
     git:
       url: https://github.com/Webos-Flutter-Legacy-TV/plugins.git

@@ -21,6 +21,17 @@ tag on both.
 - `fw-compat-check.py --require LO[:HI]`: fails if a release in the range
   does not pass. CI (`fw-compat.yml`) builds every test app, normal and
   webOS 4, and requires webOS 5+ and 4.4-6 respectively.
+- Dual surface: only the window's own surface is used while an external
+  texture is registered, so `webos_image_texture` images show with Impeller
+  (#3; 3 of 3 runs on webOS 6.5.3, was 0 of 4).
+- Frame pacing (#4) investigated and closed: the buffer release can't be
+  seen before `eglMakeCurrent`, so gating vsync only adds latency.
+- Verified on webOS 6.5.3: soloud_test 21/21 (loop fix), video_test and
+  plugins_test with local media, and `COMPAT_WEBOS4=1` packages of
+  soloud_test and video_test (bundled libsystemd 257, libopus, curl
+  forwarder, foreign protocol) with the same results as normal packages.
+- plugins_test: pin `flutter_secure_storage: ^9.2.3`; `any` could resolve
+  to 4.x, which bypasses the webOS implementation.
 - Media shim: `NDL_MediaMuteDisplay`, forwarded where the firmware has it.
 - `fw-compat-check.py`: `--webos4`; knows the shims' own libraries and
   `NDL_MediaSetPlayer`, no longer flags plugin registration or EGL symbols.
