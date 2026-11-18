@@ -33,6 +33,9 @@ const cases = <Case>[
   Case('widevine_callback', 'https://storage.googleapis.com/wvmedia/cenc/h264/tears/tears.mpd',
       VideoFormat.dash,
       DrmConfigs(type: DrmType.widevine, licenseCallback: _widevineLicense)),
+  Case('widevine_seek', 'https://storage.googleapis.com/wvmedia/cenc/h264/tears/tears.mpd',
+      VideoFormat.dash,
+      DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://proxy.uat.widevine.com/proxy?provider=widevine_test')),
   Case('playready_smooth',
       'https://test.playready.microsoft.com/smoothstreaming/SSWSS720H264PR/SuperSpeedway_720.ism/Manifest',
       VideoFormat.ss,
@@ -106,6 +109,25 @@ class _DrmPageState extends State<DrmPage> {
         await c.initialize().timeout(const Duration(seconds: 30));
         setState(() => _c = c);
         await c.play();
+        if (k.name == 'widevine_seek') {
+          // Seek through the proxy, then keep playing so the adaptive logic
+          // can switch bitrates (watch videoInfo events in compat.log).
+          await Future.delayed(const Duration(seconds: 5));
+          log('seek from ${c.value.position.inMilliseconds}ms to 300000ms');
+          await c.seekTo(const Duration(seconds: 300));
+          final pts = <String>[];
+          for (var i = 0; i < 24; i++) {
+            await Future.delayed(const Duration(milliseconds: 500));
+            pts.add('${c.value.position.inMilliseconds}');
+          }
+          log('after seek: ${pts.join(' ')}');
+          log('STEP seek_done');
+          for (var i = 0; i < 6; i++) {
+            await Future.delayed(const Duration(seconds: 5));
+            log('playing: position ${c.value.position.inMilliseconds}ms');
+          }
+          log('STEP abr_done');
+        }
         await Future.delayed(const Duration(seconds: 6));
         final p0 = c.value.position;
         log('STEP ${k.name}');

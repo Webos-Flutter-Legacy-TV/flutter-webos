@@ -102,6 +102,10 @@ shim hands it to `libwv-compat.so` (`compat/widevine/`), which:
    byte ranges stay valid);
 3. gives the media pipeline the local URL, so it plays a clear stream.
 
+Verified on webOS 6.5.3 with Google's Widevine test stream: licence by URL and
+by `licenseCallback`, seeking (resumes after ~4 s, as with clear streams) and
+adaptive switching from 240p to 720p (8 Mbit/s) with no decrypt failures.
+
 Limits: software security level (L3), so services that require hardware
 security cap quality or refuse; Widevine DASH only (encrypted HLS is not
 handled). Using the TV's provisioned CDM this way is outside the terms LG and
