@@ -16,6 +16,10 @@ tag on both.
   `NDL_MediaSetPlayer`, no longer flags plugin registration or EGL symbols.
 - CI: script lint, shim build and test app analysis on every pull request.
 - `setup.sh` fetches Debian packages it doesn't have yet on re-runs.
+- `tools/media-server.sh`: serves the test media locally (with Range
+  requests for seeking); video_test, plugins_test and soloud_test use it when
+  built with `--dart-define=MEDIA_BASE=...`, so tests no longer depend on
+  third-party hosts.
 
 ## legacy-v0.1.0 (2026-11-18)
 

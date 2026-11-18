@@ -27,8 +27,15 @@ import 'package:webos_display/webos_display.dart';
 import 'package:webos_image_texture/image_texture.dart';
 import 'package:webos_service_bridge/webos_service_bridge.dart';
 
-const kAudioUrl = 'https://download.samplelib.com/mp3/sample-15s.mp3';
-const kImageUrl = 'https://flutter.github.io/assets-for-api-docs/assets/widgets/owl.jpg';
+// Media comes from tools/media-server.sh when built with
+// --dart-define=MEDIA_BASE=http://<host>:8099, otherwise from public hosts.
+const kMediaBase = String.fromEnvironment('MEDIA_BASE');
+String media(String file, String public) =>
+    kMediaBase.isEmpty ? public : '$kMediaBase/$file';
+
+final kAudioUrl = media('sample-15s.mp3', 'https://download.samplelib.com/mp3/sample-15s.mp3');
+final kImageUrl = media('owl.jpg',
+    'https://flutter.github.io/assets-for-api-docs/assets/widgets/owl.jpg');
 const kWebUrl = 'https://example.com/';
 
 final results = ValueNotifier<List<String>>([]);

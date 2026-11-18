@@ -8,8 +8,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
-const kLong = 'https://download.blender.org/durian/trailer/sintel_trailer-720p.mp4'; // 52 s
-const kShort = 'https://flutter.github.io/assets-for-api-docs/assets/videos/butterfly.mp4';
+// Media comes from tools/media-server.sh when built with
+// --dart-define=MEDIA_BASE=http://<host>:8099, otherwise from public hosts.
+const kMediaBase = String.fromEnvironment('MEDIA_BASE');
+String media(String file, String public) =>
+    kMediaBase.isEmpty ? public : '$kMediaBase/$file';
+
+final kLong = media('sintel_trailer-720p.mp4',
+    'https://download.blender.org/durian/trailer/sintel_trailer-720p.mp4'); // 52 s
+final kShort = media('butterfly.mp4',
+    'https://flutter.github.io/assets-for-api-docs/assets/videos/butterfly.mp4');
 
 void log(String line) {
   // ignore: avoid_print

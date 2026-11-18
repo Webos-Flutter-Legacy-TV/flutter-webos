@@ -213,6 +213,7 @@ the key is not `~/.ssh/lg_webos`.
 | `tools/tv-key/tv-key.c` | Inject remote key presses into evdev |
 | `tools/perf-variant.sh` | Run `tests/compat_test` with a resolution / Impeller setting |
 | `tools/video-scenario.sh`, `tools/video-probe.sh` | Scripted video_player test; probe one URL |
+| `tools/media-server.sh` | Download the test media once and serve it on the LAN (with HTTP Range, for seeking); build test apps with `--dart-define=MEDIA_BASE=http://<host>:8099`, or set `MEDIA_BASE` for `video-scenario.sh` |
 
 Debug switches: an empty file in an app's `webos/meta/` turns on extra output
 in `compat.log` (next to the installed binary):

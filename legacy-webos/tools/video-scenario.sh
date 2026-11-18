@@ -28,7 +28,7 @@ launch() {
   "${SSH[@]}" "luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$1\"}' >/dev/null 2>&1 & P=\$!; sleep 2; kill \$P"
 }
 
-(cd "$FW/tests/video_test" && . "$FW/env.sh" && flutter-webos build webos --release >/dev/null 2>&1) || { echo build failed; exit 1; }
+(cd "$FW/tests/video_test" && . "$FW/env.sh" && flutter-webos build webos --release ${MEDIA_BASE:+--dart-define=MEDIA_BASE=$MEDIA_BASE} >/dev/null 2>&1) || { echo build failed; exit 1; }
 "$FW/tools/dev-cycle.sh" "$FW/tests/video_test" 1 --luna | grep '^install'
 
 if [ "${PASS2:-0}" = 1 ]; then

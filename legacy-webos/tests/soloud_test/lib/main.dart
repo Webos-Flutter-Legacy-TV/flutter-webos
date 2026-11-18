@@ -10,8 +10,14 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-const kMp3Url = 'https://download.samplelib.com/mp3/sample-15s.mp3';
-const kWavUrl = 'https://download.samplelib.com/wav/sample-15s.wav';
+// Media comes from tools/media-server.sh when built with
+// --dart-define=MEDIA_BASE=http://<host>:8099, otherwise from public hosts.
+const kMediaBase = String.fromEnvironment('MEDIA_BASE');
+String media(String file, String public) =>
+    kMediaBase.isEmpty ? public : '$kMediaBase/$file';
+
+final kMp3Url = media('sample-15s.mp3', 'https://download.samplelib.com/mp3/sample-15s.mp3');
+final kWavUrl = media('sample-15s.wav', 'https://download.samplelib.com/wav/sample-15s.wav');
 
 final results = ValueNotifier<List<String>>([]);
 
