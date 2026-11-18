@@ -205,18 +205,30 @@ unsigned int eglSwapInterval(void *dpy, int interval) {
 }
 
 // ---------------------------------------------------------------------------
-// Dual surface (default; <app dir>/compat-single-surface turns it off). The Mali driver gives each
+// Dual surface (opt-in: <app dir>/compat-dual-surface). Known issue: with
+// Impeller, a change drawn just before the screen goes static (an image
+// texture appearing, a video hole) can stay invisible; a race exposed by the
+// faster frames, cause not yet found. The Mali driver gives each
 // window surface two buffers and the compositor returns the shown one only
 // after the next is on screen, so eglMakeCurrent blocks ~10 ms per frame and
 // leaves ~7 ms of the 16.7 ms frame for rendering. Give the window a second
 // EGL surface (a twin wl_egl_window on the same wl_surface, from the bundled
 // wayland-egl forwarder) and alternate frames between the two: each buffer is
 // then reused four frames later, long after the compositor released it. The
-// engine only ever sees the first surface. Safe because Mali has no
-// EGL_EXT_buffer_age, so every frame is fully redrawn.
+// engine only ever sees the first surface. LG's embedder redraws only what
+// changed since the back buffer was last shown, from EGL_BUFFER_AGE_EXT,
+// which Mali reports per surface; the shim converts it to frames of the
+// pair (see dual_buffer_age).
 // ---------------------------------------------------------------------------
 #define MAX_DUAL 4
-static struct { void *s[2]; int cur; } g_dual[MAX_DUAL];
+#define AGE_HIST 8
+static struct {
+  void *s[2];
+  int cur;
+  unsigned frames;              // presents on the pair so far
+  unsigned hist[2][AGE_HIST];   // pair frame number of each surface's last presents
+  unsigned nhist[2];
+} g_dual[MAX_DUAL];
 static int g_dual_on = -1;
 static unsigned int (*real_make_current)(void *, void *, void *, void *);
 static int shim_app_file_exists(const char *name);
@@ -244,6 +256,20 @@ static void *dual_map(void *surf) {
   int i = dual_find(surf);
   return i < 0 ? surf : g_dual[i].s[g_dual[i].cur];
 }
+// Mali's buffer age counts presents of one surface: age a means the back
+// buffer was shown a presents of that surface ago. Convert it to presents of
+// the pair, which is what the embedder's damage history counts; 0 (unknown,
+// full redraw) when that present is no longer recorded.
+static int dual_buffer_age(void *surf, void *mapped, int age) {
+  int i = dual_find(surf);
+  if (i < 0 || age <= 0) return age;
+  int k = mapped == g_dual[i].s[1];
+  unsigned n = g_dual[i].nhist[k];
+  if ((unsigned)age > n || age > AGE_HIST) return 0;
+  unsigned shown = g_dual[i].hist[k][(n - age) % AGE_HIST];
+  return (int)(g_dual[i].frames + 1 - shown);
+}
+
 // For eglMakeCurrent (start of every frame): as dual_map, but go back to the
 // window's own surface at once when media is loaded.
 static void *dual_map_make_current(void *surf) {
@@ -268,7 +294,7 @@ static void *dual_map_swap(void *surf) {
 }
 static void dual_add(void *dpy, void *config, void *win, const int *attrs, void *surf,
                      void *(*create)(void *, void *, void *, const int *)) {
-  if (g_dual_on < 0) g_dual_on = !shim_app_file_exists("compat-single-surface");
+  if (g_dual_on < 0) g_dual_on = shim_app_file_exists("compat-dual-surface");
   if (!g_dual_on || !surf) return;
   void *(*twin_fn)(void *) = dlsym(RTLD_DEFAULT, "compat_wl_egl_window_twin");
   void *twin = twin_fn ? twin_fn(win) : NULL;
@@ -293,21 +319,16 @@ static void dual_add(void *dpy, void *config, void *win, const int *attrs, void 
 }
 // After presenting `surf`: switch to the other surface, and if the engine's
 // surface is current on this thread, make the new one current.
-static void dual_after_swap(void *surf) {
+static void dual_after_swap(void *surf, void *presented) {
   int i = dual_find(surf);
   if (i < 0) return;
-  int next = dual_media_active() ? 0 : g_dual[i].cur ^ 1;
-  if (next == g_dual[i].cur) return;
-  g_dual[i].cur = next;
-  static void *(*cur_ctx)(void), *(*cur_dpy)(void), *(*cur_surf)(int);
-  if (!cur_ctx) {
-    cur_ctx = dlsym(RTLD_NEXT, "eglGetCurrentContext");
-    cur_dpy = dlsym(RTLD_NEXT, "eglGetCurrentDisplay");
-    cur_surf = dlsym(RTLD_NEXT, "eglGetCurrentSurface");
-  }
-  void *old = g_dual[i].s[g_dual[i].cur ^ 1];
-  if (cur_surf && cur_surf(0x3059 /* EGL_DRAW */) == old && real_make_current)
-    real_make_current(cur_dpy(), g_dual[i].s[g_dual[i].cur], g_dual[i].s[g_dual[i].cur], cur_ctx());
+  int k = presented == g_dual[i].s[1];
+  g_dual[i].frames++;
+  g_dual[i].hist[k][g_dual[i].nhist[k]++ % AGE_HIST] = g_dual[i].frames;
+  // The next eglMakeCurrent (the embedder calls it at the start of every
+  // frame) maps to the other surface; no surface switch here, while the
+  // engine may still be issuing GL work for the frame it just presented.
+  g_dual[i].cur = dual_media_active() ? 0 : g_dual[i].cur ^ 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,18 +478,21 @@ static unsigned int call_ext(void *d, void *s, void *r, int n) { return real_swa
 __attribute__((visibility("default")))
 unsigned int eglSwapBuffers(void *dpy, void *surf) {
   if (!real_swap) real_swap = dlsym(RTLD_NEXT, "eglSwapBuffers");
-  unsigned int ok = timed_swap(call_swap, dpy, dual_map_swap(surf), NULL, 0);
-  dual_after_swap(surf);
+  void *target = dual_map_swap(surf);
+  unsigned int ok = timed_swap(call_swap, dpy, target, NULL, 0);
+  dual_after_swap(surf, target);
   return ok;
 }
 static unsigned int swap_damage_khr(void *dpy, void *surf, void *rects, int n) {
-  unsigned int ok = timed_swap(call_khr, dpy, dual_map_swap(surf), rects, n);
-  dual_after_swap(surf);
+  void *target = dual_map_swap(surf);
+  unsigned int ok = timed_swap(call_khr, dpy, target, rects, n);
+  dual_after_swap(surf, target);
   return ok;
 }
 static unsigned int swap_damage_ext(void *dpy, void *surf, void *rects, int n) {
-  unsigned int ok = timed_swap(call_ext, dpy, dual_map_swap(surf), rects, n);
-  dual_after_swap(surf);
+  void *target = dual_map_swap(surf);
+  unsigned int ok = timed_swap(call_ext, dpy, target, rects, n);
+  dual_after_swap(surf, target);
   return ok;
 }
 
@@ -519,8 +543,18 @@ unsigned int eglQuerySurface(void *dpy, void *surf, int attr, int *value) {
   static unsigned int (*real)(void *, void *, int, int *);
   if (!real) real = dlsym(RTLD_NEXT, "eglQuerySurface");
   in_egl = "eglQuerySurface";
-  unsigned int ok = real(dpy, dual_map(surf), attr, value);
+  void *mapped = dual_map(surf);
+  unsigned int ok = real(dpy, mapped, attr, value);
   in_egl = NULL;
+  if (ok && attr == 0x313D /* EGL_BUFFER_AGE_EXT */ && value) {
+    int raw = *value;
+    *value = dual_buffer_age(surf, mapped, raw);
+    static int logged;
+    if (wait_on() && logged < 12) {
+      logged++;
+      fprintf(stderr, "[compat] buffer age %p: driver %d -> %d\n", mapped, raw, *value);
+    }
+  }
   return ok;
 }
 

@@ -44,7 +44,7 @@ order, everything that stopped it from starting on webOS 6:
 | Back key never delivered to the app | Shim sets `_WEBOS_ACCESS_POLICY_KEYS_BACK` on the shell surface |
 | The embedder turns the remote's Back (evdev 412) into an Escape key, which Flutter does not treat as navigation | Shim sends `popRoute` on `flutter/navigation` instead, like Android, using the engine handle captured from `FlutterEngineGetProcAddresses` |
 | Some firmware has only the vendor `libwayland-egl.so.0`, other only `.so.1` | Bundled `libwayland-egl.so.1` (`compat/wayland-egl-forward`) forwards to whichever the TV has |
-| The Mali driver gives each window two buffers and the compositor returns the shown one only once the next is on screen, so `eglMakeCurrent` blocks ~10 ms per frame, leaving ~7 ms to render | Shim gives the window a second EGL surface on the same Wayland surface and alternates frames (four buffers); falls back to the window's own surface while media is loaded, as the second one breaks the video plane's punch-through. `compat-single-surface` turns it off |
+| The Mali driver gives each window two buffers and the compositor returns the shown one only once the next is on screen, so `eglMakeCurrent` blocks ~10 ms per frame, leaving ~7 ms to render | Opt-in (`compat-dual-surface`): the shim gives the window a second EGL surface on the same Wayland surface and alternates frames (four buffers), converting Mali's per-surface buffer age for the embedder's partial redraw, and uses the window's own surface while media is loaded. See "Renderer and frame rate" for the known issue |
 | NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its window from SDL, even for audio | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window, or a placeholder for audio-only players (added when any bundled library links `libNDL_media`) |
 | `drm.licenseUrl` in the load request (webOS 26) is ignored; old releases use a DRM client (`com.webos.service.drm`) | NDL shim translates it: `NDL_MediaDRMLoad`, `NDL_MediaDRMSendMessage` with a `PlayReadyInitiator` (`LA_URL`), then loads with `drm.clientId`; unloads the client at exit |
 | `NDL_MediaSetDrmOperation` missing (video_player_drm, `-z now`) | NDL shim exports it: licence responses for the opt-in Widevine proxy, failure otherwise |
@@ -84,12 +84,37 @@ and testing for an existing app.
 
 Install it like any IPK (`ares-install`, or `tools/tv-install.sh` on a rooted TV).
 
-On webOS 6 enable Impeller in `webos/meta/flutter-conf.json`; it is 2-3x faster
-than Skia on the Mali GPU:
+### Renderer and frame rate
+
+LG's build renders with Skia unless `webos/meta/flutter-conf.json` enables
+Impeller:
 
 ```json
 { "engine-switches": { "enable-impeller": true } }
 ```
+
+Measured on webOS 6.5.3 at 1080p (`tests/compat_test`, frames per second):
+
+| Scene | Skia | Impeller | Impeller + `compat-dual-surface` |
+| --- | --- | --- | --- |
+| Four large animated tiles with opacity and shadows | 17 | 52 | 54 |
+| Constant-speed list scroll | 58 | 61 | 61 |
+| 64 animated tiles | 12 | 19 | 24 |
+
+Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
+`compat-dual-surface`, leaving headroom for heavier frames.
+
+- **Apps without `video_player`**: enable Impeller. All plugin, DRM-licence
+  and input tests pass with it.
+- **Apps with `video_player`**: stay on Skia. With Impeller the video stayed
+  hidden behind the UI in the full-screen stage of `tests/video_test` in 3 of
+  3 runs (fine with Skia in 4 of 4); the plugin's hole draws, but in some
+  layouts it does not let the video show through.
+- **`compat-dual-surface`** is opt-in: with Impeller, a change drawn just
+  before the screen goes static can stay invisible (a `webos_image_texture`
+  image did not appear in 5 of 5 runs). It does not happen with a single
+  surface or when frames are slower, so it looks like a race exposed by the
+  faster frames; not yet found.
 
 ## Widevine on older webOS (opt-in)
 
@@ -165,7 +190,7 @@ of `popRoute`), `compat-log-ndl` (raw NDL media events),
 `compat-log-pmlog` (plugin PmLog messages), `compat-log-swap` (per 120
 frames: GPU time, time blocked in the swap and between presents, waits over
 2 ms by thread and caller, buffer releases; adds a `glFinish` per frame),
-`compat-single-surface` (render to the window's own EGL surface only),
+`compat-dual-surface` (alternate two EGL surfaces, see "Renderer and frame rate"),
 `compat-swap0` (EGL swap interval 0; no effect on webOS 6.5.3, whose Mali
 configs only allow interval 0). In `tests/compat_test`, `compat-perf` adds
 the frame-timing scenes (`tools/perf-variant.sh` sets it).
@@ -185,11 +210,16 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
 
 ## Known issues
 
-- **Frame pacing**: the raster wait that capped light scenes at 50-55 fps is
-  fixed (raster 17 -> 7 ms per frame, heavy scenes +27% fps), except while
-  media is loaded. One test scene (four large animated tiles with `Opacity`
-  and shadows) still runs at ~54 fps with no slow raster frames; the cause is
-  elsewhere and not yet found.
+- **Frame pacing**: the Mali driver blocks ~10 ms per frame waiting for a
+  buffer. `compat-dual-surface` removes the wait but is opt-in because of an
+  Impeller race (see "Renderer and frame rate"). Even with it, the
+  four-large-tiles scene runs at ~54 fps with no slow raster frames; cause
+  not found.
+- **Impeller and video**: see "Renderer and frame rate"; video apps should
+  stay on Skia.
+- **video_test "small" stage**: the video was hidden in about half of the
+  runs with either renderer (the 960x540 window after leaving full screen);
+  not yet investigated.
 - **Video**: after a seek, playback resumes 4-7 s later; switching 2x back to
   1x makes the reported position jump back a few seconds; with two players
   only the newest is visible; per-stream volume is not supported by LG's plugin.

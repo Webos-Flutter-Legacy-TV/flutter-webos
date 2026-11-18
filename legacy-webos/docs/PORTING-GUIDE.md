@@ -42,8 +42,10 @@ Without the flag, the same step can be run on an existing build:
 
 ## 3. Configure
 
-Recommended in `webos/meta/flutter-conf.json`: Impeller, 2-3x faster than
-Skia on the webOS 6 GPU.
+Renderer, in `webos/meta/flutter-conf.json`: enable Impeller (2-3x faster
+than Skia on the webOS 6 GPU) unless the app uses `video_player`, whose
+video can stay hidden behind the UI with Impeller. See the README section
+"Renderer and frame rate".
 
 ```json
 { "engine-switches": { "enable-impeller": true } }
@@ -55,7 +57,7 @@ Optional, as empty files in `webos/meta/`:
 | --- | --- |
 | `compat-widevine-cdm` | Widevine playback through the TV's own CDM (see README, opt-in, L3) |
 | `compat-back-as-key` | Deliver Back as a key event instead of a route pop |
-| `compat-single-surface` | Turn off the dual-surface rendering that removes the per-frame driver wait (see README) |
+| `compat-dual-surface` | Faster frames (removes a ~10 ms driver wait per frame); known issue with Impeller, see README |
 | `compat-log-*`, `compat-swap0` | Debug output, see README |
 
 ## 4. Plugins
@@ -90,8 +92,8 @@ dependencies:
   `PopScope` work as usual. Check how your app behaves on its first page.
 - **Video:** one video plane at a time; seeking resumes after 4-7 s; DASH
   streams with VP9 or Opus tracks do not load.
-- **Frame rate:** light UI runs at 60 fps; avoid large shadows, blurs and
-  `Opacity` over big areas, which the GPU handles slowly.
+- **Frame rate:** light UI runs at 50-60 fps with Impeller; avoid large
+  shadows, blurs and `Opacity` over big areas, which the GPU handles slowly.
 - **refreshRate** reports 16666; assume 60 Hz.
 
 ## 6. Test
