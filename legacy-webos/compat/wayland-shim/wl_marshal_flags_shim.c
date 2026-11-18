@@ -435,8 +435,34 @@ static void swap_stat(const char *what, double *v) {
   fprintf(stderr, " %s %.1f/%.1f/%.1f", what, sum / SWAP_N, s[SWAP_N * 9 / 10], s[SWAP_N - 1]);
 }
 // Wraps one present call; `swap` performs it.
+// Milliseconds since the process started (/proc/self/stat starttime).
+static double ms_since_process_start(void) {
+  char buf[1024];
+  FILE *f = fopen("/proc/self/stat", "r");
+  if (!f) return -1;
+  size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[len] = 0;
+  char *p = strrchr(buf, ')');  // comm may contain spaces
+  if (!p) return -1;
+  unsigned long long start = 0;
+  // fields after ")": state(3) ... starttime is field 22
+  int field = 2;
+  for (char *t = strtok(p + 1, " "); t; t = strtok(NULL, " ")) {
+    if (++field == 22) { start = strtoull(t, NULL, 10); break; }
+  }
+  struct timespec ts;
+  clock_gettime(CLOCK_BOOTTIME, &ts);
+  return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6 - start * 1000.0 / sysconf(_SC_CLK_TCK);
+}
+
 static unsigned int timed_swap(unsigned int (*swap)(void *, void *, void *, int), void *dpy,
                                void *surf, void *rects, int n) {
+  static int first = 1;
+  if (first) {
+    first = 0;
+    fprintf(stderr, "[compat] first frame %.0f ms after process start\n", ms_since_process_start());
+  }
   if (swap_log < 0) swap_log = shim_app_file_exists("compat-log-swap");
   if (!swap_log) return swap(dpy, surf, rects, n);
   static void (*gl_finish)(void);
