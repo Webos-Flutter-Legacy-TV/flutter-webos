@@ -536,6 +536,14 @@ class _RunnerState extends State<Runner> {
     report('run', 'INFO', 'start ${DateTime.now()}');
     await runBasicChecks();
     await runPluginChecks();
+    // Frame-timing runs, only when the app ships an empty webOS meta file
+    // `compat-perf` (installed next to the binary): they take ~30 s.
+    if (File('${File(Platform.resolvedExecutable).parent.path}/compat-perf').existsSync()) {
+      await _stressRun('perf.light', (done) => StressPage(tiles: 4, seconds: 8, onDone: done));
+      await _stressRun('perf.scroll_plain',
+          (done) => ScrollStressPage(seconds: 8, mode: 'plain', pxPerSec: 600, onDone: done));
+      await _stressRun('perf.tiles64', (done) => StressPage(tiles: 64, seconds: 8, onDone: done));
+    }
     final fails = results.where((r) => r.status == 'FAIL').length;
     report('run', 'INFO', 'done, ${results.length} results, $fails failed');
     setState(() {

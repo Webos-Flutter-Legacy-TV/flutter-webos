@@ -28,6 +28,8 @@ json.dump(d, open(p, "w"), indent=2)
 EOF
 
 (cd "$APP" && flutter-webos build webos --release >/dev/null 2>&1)
+: > "$APP/webos/meta/compat-perf"
+trap 'rm -f "$APP/webos/meta/compat-perf" "$APP/webos/meta/compat-swap0"' EXIT
 if [ "$SWAP0" = true ]; then : > "$APP/webos/meta/compat-swap0"; else rm -f "$APP/webos/meta/compat-swap0"; fi
 (cd "$APP" && flutter-webos build webos --release >/dev/null 2>&1)
 "$FW/tools/dev-cycle.sh" "$APP" 2 --luna >/dev/null 2>&1 || true
