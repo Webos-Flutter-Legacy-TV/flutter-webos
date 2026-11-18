@@ -71,10 +71,15 @@ if you accept its licence, the LG webOS NDK. Nothing is installed system-wide.
 ## Build and run an app on an older TV
 
 ```sh
-cd my_app && flutter-webos build webos --release
-../flutter-webos/legacy-webos/tools/make-compat-ipk.sh . release
-#   -> build/webos-compat/release/<app-id>_<version>_all.ipk
+cd my_app && flutter-webos build webos --release --legacy
+#   -> build/webos/arm/release/...ipk                         (webOS 26)
+#   -> build/webos-compat/release/<app-id>_<version>_arm.ipk  (older webOS)
 ```
+
+`--legacy` runs `tools/make-compat-ipk.sh` after the normal build; the script
+can also be run by hand on an existing build (`make-compat-ipk.sh . release`).
+[docs/PORTING-GUIDE.md](docs/PORTING-GUIDE.md) covers plugins, configuration
+and testing for an existing app.
 
 Install it like any IPK (`ares-install`, or `tools/tv-install.sh` on a rooted TV).
 
@@ -198,6 +203,7 @@ of `popRoute`), `compat-log-ndl` (raw NDL media events),
 
 ## Licensing
 
-The bundled glibc and libstdc++ are open source (LGPL / GPL with runtime
-exception) from Debian. LG's engine, embedder and NDK stay under LG's terms;
+The bundled glibc (LGPL, from Debian) and C++ runtime (GPL with the runtime
+exception, from LG's NDK build of GCC) are open source; ship their licences
+and offer the matching sources. LG's engine, embedder and NDK stay under LG's terms;
 check those before distributing repackaged apps outside Developer Mode.
