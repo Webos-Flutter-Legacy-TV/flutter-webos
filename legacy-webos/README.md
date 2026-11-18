@@ -22,7 +22,7 @@ Developer Mode:
 | url_launcher (opens the TV browser), webos_image_texture | Works |
 | gamepads, flutter_keyboard_visibility, custom_mouse_cursor | Work (API calls; no gamepad attached) |
 | flutter_secure_storage | Works via app-sandbox AES-GCM fallback (no system keystore on webOS 6; see Known issues) |
-| video_player_drm | Clear HLS/DASH and PlayReady (licence URL) play; Widevine does not (see Known issues) |
+| video_player_drm | Clear HLS/DASH and PlayReady (licence URL) play; Widevine plays with the opt-in CDM proxy (software security level) |
 | Not tested | audioplayers_soloud, flutterfire |
 | Performance | 50-60 fps for lists and light UI with Impeller; heavy shadow/opacity grids are slow |
 
@@ -85,6 +85,30 @@ than Skia on the Mali GPU:
 { "engine-switches": { "enable-impeller": true } }
 ```
 
+## Widevine on older webOS (opt-in)
+
+Add an empty `webos/meta/compat-widevine-cdm` to the app. When the app loads a
+Widevine DASH stream (with `licenseServerUrl` or `licenseCallback`), the NDL
+shim hands it to `libwv-compat.so` (`compat/widevine/`), which:
+
+1. loads the TV's own Widevine CE CDM (`/usr/lib/libwidevine_ce_cdm_shared.so`),
+   provisions the device once (certificate kept in the app's data folder) and
+   gets the licence: from `licenseServerUrl`, or, with `licenseCallback`, by
+   sending the challenge to the app as the `drmEncrypted` event webOS 26 NDL
+   sends and taking the licence back from `NDL_MediaSetDrmOperation`;
+2. runs a proxy on `127.0.0.1` that serves the manifest without
+   `ContentProtection` and decrypts each requested byte range of the media
+   files in place (CENC `cenc`/`cbcs`; boxes are renamed, never resized, so
+   byte ranges stay valid);
+3. gives the media pipeline the local URL, so it plays a clear stream.
+
+Limits: software security level (L3), so services that require hardware
+security cap quality or refuse; Widevine DASH only (encrypted HLS is not
+handled). Using the TV's provisioned CDM this way is outside the terms LG and
+Google ship it under, and the device certificate could be revoked. Use at your
+own risk. `compat/widevine/out/wv-selftest` (built by `build-shims.sh`) checks
+the CDM, provisioning and a licence round trip from inside an app's jail.
+
 ## Tools
 
 The TV tools use SSH as root (rooted TV). Set `TV_HOST`, and `TV_SSH_KEY` if
@@ -134,12 +158,10 @@ of `popRoute`), `compat-log-ndl` (raw NDL media events),
   patched plugin in Webos-Flutter-Legacy-TV/plugins detects this and
   encrypts with AES-256-GCM using a key in the app's private data folder
   (mode 0600): safe from other apps, not from root on the TV.
-- **Widevine (video_player_drm) does not play on webOS 6.** The URL pipeline
-  has a Widevine CENC decryptor, but LG documents Widevine Modular only via
-  MSE/EME (an in-app CDM, as LG's Chromium does); every load-option form
-  tried (`WIDEVINE`, `widevine_modular`, DRM client + `widevine+xml`) ends in
-  `552 Encrypted Content`. PlayReady works through the DRM-client adapter.
-  The licence-callback mode (`useLicenseCallback`) is not available.
+- **Widevine (video_player_drm) needs the opt-in CDM proxy on webOS 6.** The
+  URL pipeline cannot do Widevine Modular (LG supports it there only through
+  MSE/EME with an in-app CDM; every load-option form ends in
+  `552 Encrypted Content`). See "Widevine on older webOS" above.
 - **Streams with VP9/Opus tracks** in DASH fail to load on webOS 6.
 - **device_info_plus**: use `DeviceInfoWebOSPlugin().webosInfo`; the generic
   `DeviceInfoPlugin().deviceInfo` casts to `LinuxDeviceInfo` and throws.
