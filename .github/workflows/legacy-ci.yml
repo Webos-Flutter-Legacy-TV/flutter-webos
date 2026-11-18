@@ -66,6 +66,8 @@ jobs:
           for f in compat/wayland-shim/out/libwl-marshal-flags-shim.so \
                    compat/ndl-sdl-shim/out/libSDL2-2.0.so.0 \
                    compat/wayland-egl-forward/out/libwayland-egl.so.1 \
+                   compat/fallback/out/libcurl.so.4 \
+                   compat/webos4/out/libwebos-foreign-compat.so \
                    tools/tv-key/tv-key; do
             test -s "$f" || { echo "missing $f"; exit 1; }
             file "$f"

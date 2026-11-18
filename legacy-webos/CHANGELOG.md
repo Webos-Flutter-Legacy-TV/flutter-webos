@@ -5,6 +5,18 @@ Releases are tagged `legacy-vX.Y.Z` on both
 [plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins); use the same
 tag on both.
 
+## Unreleased
+
+- webOS 4 (opt-in `COMPAT_WEBOS4=1`, untested on a TV): bundles Debian's
+  libsystemd, a `libcurl.so.4` forwarder to the firmware's `libcurl.so.5`,
+  and the `wl_webos_foreign` protocol descriptions; the firmware check passes
+  for webOS 4.4, 4.10, 5.3 and 6.4 (#2).
+- Media shim: `NDL_MediaMuteDisplay`, forwarded where the firmware has it.
+- `fw-compat-check.py`: `--webos4`; knows the shims' own libraries and
+  `NDL_MediaSetPlayer`, no longer flags plugin registration or EGL symbols.
+- CI: script lint, shim build and test app analysis on every pull request.
+- `setup.sh` fetches Debian packages it doesn't have yet on re-runs.
+
 ## legacy-v0.1.0 (2026-11-18)
 
 First release. Apps built with LG's flutter-webos (webOS 26) run on

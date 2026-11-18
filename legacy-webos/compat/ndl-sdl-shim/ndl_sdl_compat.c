@@ -11,6 +11,7 @@
 //   - NDL_MediaInitWithWindowId(): remember Flutter's window ID, then call
 //     the old NDL_MediaInit();
 //   - NDL_MediaUnsubscribeEvents(): absent on old firmware; no-op;
+//   - NDL_MediaMuteDisplay(): absent on webOS 4; forwarded where it exists;
 //   - the few SDL functions NDL calls, answering with Flutter's window ID.
 //     Window placement stays with Flutter's embedder, so the setters are no-ops.
 #define _GNU_SOURCE
@@ -145,6 +146,19 @@ EXPORT int NDL_MediaSubscribeEvents(ndl_cb cb) {
   g_user_cb[slot] = cb;
   fprintf(stderr, "[ndl-compat] NDL_MediaSubscribeEvents(slot %d) wrapped\n", slot);
   return real ? real(cb ? g_tramps[slot] : NULL) : -1;
+}
+
+// webOS 4 NDL has no NDL_MediaMuteDisplay (video_player uses it to hide the
+// video while the app is in the background). Forward to the firmware's
+// function where it exists; otherwise report failure, which video_player
+// only logs.
+EXPORT int NDL_MediaMuteDisplay(_Bool onoff) {
+  static int (*real)(_Bool);
+  static int looked;
+  if (!looked) { real = (int (*)(_Bool))dlsym(RTLD_NEXT, "NDL_MediaMuteDisplay"); looked = 1; }
+  if (real) return real(onoff);
+  fprintf(stderr, "[ndl-compat] NDL_MediaMuteDisplay(%d): not on this firmware\n", (int)onoff);
+  return -1;
 }
 
 // ------------------------------------------------------ DRM (webOS 26) ----

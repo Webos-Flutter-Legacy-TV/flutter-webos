@@ -15,7 +15,10 @@ Libraries legacy-webos bundles (glibc, the C++ runtime) and symbols its shims
 provide are excluded. The inventory proves a symbol exists; it says nothing
 about symbol versions, kernel versions or protocol versions.
 
-  fw-compat-check.py --db <data dir> <elf>...
+  fw-compat-check.py --db <data dir> [--webos4] <elf>...
+
+--webos4 checks a package built with COMPAT_WEBOS4=1. Pass the bundled
+libsystemd.so.0 as one of the ELFs to check its own dependencies too.
 """
 import argparse
 import json
@@ -26,15 +29,23 @@ import sys
 
 BUNDLED = re.compile(r"^(ld-linux\.so\.3|libc\.so\.6|libm\.so\.6|libpthread\.so\.0|libdl\.so\.2|"
                      r"librt\.so\.1|libresolv\.so\.2|libutil\.so\.1|libanl\.so\.1|libstdc\+\+\.so\.6|"
-                     r"libgcc_s\.so\.1|libatomic\.so\.1|libflutter_.*|libapp\.so|lib.*_plugin\.so)$")
+                     r"libgcc_s\.so\.1|libatomic\.so\.1|libflutter_.*|libapp\.so|lib.*_plugin\.so|"
+                     r"libwl-marshal-flags-shim\.so|libwebos-foreign-compat\.so|libwv-compat\.so)$")
 # libraries legacy-webos may satisfy with either of several system sonames
 # (libwayland-egl.so.1 is a bundled forwarder to .so.1 or .so.0)
 ALTERNATIVES = {"libwayland-egl.so.1": ["libwayland-egl.so.1", "libwayland-egl.so.0"]}
 # provided by legacy-webos shims
 SHIMMED = {"wl_proxy_marshal_flags", "WebPMalloc", "NDL_MediaInitWithWindowId",
-           "NDL_MediaUnsubscribeEvents", "NDL_MediaSetDrmOperation"}
+           "NDL_MediaUnsubscribeEvents", "NDL_MediaSetDrmOperation", "NDL_MediaMuteDisplay",
+           "NDL_MediaSetPlayer"}  # single-player fallback where the firmware lacks it
+# with --webos4 (packages built with COMPAT_WEBOS4=1): libsystemd is bundled and
+# libcurl.so.4 is a forwarder to the firmware's libcurl.so.5
+WEBOS4_BUNDLED = {"libsystemd.so.0"}
+WEBOS4_ALTERNATIVES = {"libcurl.so.4": ["libcurl.so.4", "libcurl.so.5"]}
+WEBOS4_SHIMMED = {"wl_webos_foreign_interface", "wl_webos_exported_interface",
+                  "wl_webos_imported_interface"}
 IGNORE_SYM = re.compile(r"^(_ITM_|__gmon_start__|_Jv_|__cxa_|__gxx_personality|_Unwind_|__aeabi_|"
-                        r"__atomic_)|7flutter|^Flutter")  # libatomic and LG's own libraries are bundled
+                        r"__atomic_)|7flutter|^Flutter|PluginRegisterWithRegistrar$")  # libatomic, LG's own libraries and the plugin libraries are bundled
 
 
 def elf_info(path):
@@ -112,13 +123,20 @@ def release_key(r):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--db", required=True, help="fw-symbols data directory")
+    ap.add_argument("--webos4", action="store_true",
+                    help="package built with COMPAT_WEBOS4=1 (bundled libsystemd, libcurl.so.4 forwarder)")
     ap.add_argument("elf", nargs="+")
     args = ap.parse_args()
+    if args.webos4:
+        ALTERNATIVES.update(WEBOS4_ALTERNATIVES)
 
     elfs = {}
     for p in args.elf:
         needed, undef = elf_info(p)
-        needed = [n for n in needed if not BUNDLED.match(n)]
+        needed = [n for n in needed if not BUNDLED.match(n)
+                  and not (args.webos4 and n in WEBOS4_BUNDLED)]
+        if args.webos4:
+            undef = {u for u in undef if not u.startswith("sd_")} - WEBOS4_SHIMMED
         elfs[os.path.basename(p)] = (needed, undef - SHIMMED)
 
     fws = []
@@ -143,7 +161,7 @@ def main():
             # symbols that would come from bundled libraries are not checked
             # EGL comes from the vendor GPU driver (libEGL forwards to it), which the
             # inventory does not always list in full.
-            has_egl = loaded.get("libEGL.so.1") is not None
+            has_egl = fw.lib("libEGL.so.1") is not None
             missing_syms = sorted(s for s in undef if s not in exported and not (has_egl and s.startswith("egl")))
             # only flag symbols that plausibly belong to a system library
             if not missing_libs and not missing_syms:

@@ -40,6 +40,10 @@ Without the flag, the same step can be run on an existing build:
 ../flutter-webos/legacy-webos/tools/make-compat-ipk.sh . release
 ```
 
+For a **webOS 4** TV (untested on real hardware), package with
+`COMPAT_WEBOS4=1 flutter-webos build webos --release --legacy`. That package
+is for webOS 4-6 only; see the README section "webOS 4".
+
 ## 3. Configure
 
 Renderer, in `webos/meta/flutter-conf.json`: enable Impeller (2-3x faster

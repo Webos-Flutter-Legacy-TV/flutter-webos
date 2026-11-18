@@ -16,7 +16,9 @@ NDK_VERSION=11.2.0
 NDK_URL="https://github.com/lg-flutter-webos/ndk/releases/download/$NDK_VERSION/webos-ndk-flutter-starfish-x86_64-ca9v1-$NDK_VERSION.sh"
 DEBIAN_MIRROR="https://deb.debian.org/debian"
 DEBIAN_SUITE=trixie
-DEBIAN_PACKAGES="libc6"
+# libsystemd0: fallback for webOS 4, whose firmware has no libsystemd.so.0
+# (LG's media library uses its sd_event loop). Needs only glibc and libcap2.
+DEBIAN_PACKAGES="libc6 libsystemd0"
 
 step() { printf '\n== %s\n' "$*"; }
 
@@ -28,22 +30,22 @@ if [ ! -x "$TC/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-lin
   (cd "$TC/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot" && ./relocate-sdk.sh >/dev/null)
 fi
 
-step "Debian $DEBIAN_SUITE armel glibc: bundled into compat IPKs"
+step "Debian $DEBIAN_SUITE armel runtime: bundled into compat IPKs"
 # armel = the same soft-float ABI as webOS userspace; Debian's glibc is built
 # for kernel >= 3.2 (LG's NDK glibc needs >= 5.15, which old TVs do not have).
-if [ ! -e "$DL/debian-armel/root/usr/lib/arm-linux-gnueabi/libc.so.6" ]; then
-  mkdir -p "$DL/debian-armel"
+mkdir -p "$DL/debian-armel/root"
+[ -s "$DL/debian-armel/Packages" ] ||
   curl -fsSL "$DEBIAN_MIRROR/dists/$DEBIAN_SUITE/main/binary-armel/Packages.xz" | xz -d > "$DL/debian-armel/Packages"
-  rm -rf "$DL/debian-armel/root"; mkdir -p "$DL/debian-armel/root"
-  for p in $DEBIAN_PACKAGES; do
-    read -r file sha < <(awk -v p="$p" '$0=="Package: "p{f=1} f&&/^Filename:/{fn=$2} f&&/^SHA256:/{print fn, $2; exit}' "$DL/debian-armel/Packages")
-    deb="$DL/debian-armel/$(basename "$file")"
-    curl -fsSL "$DEBIAN_MIRROR/$file" -o "$deb"
-    echo "$sha  $deb" | sha256sum -c --quiet
-    dpkg-deb -x "$deb" "$DL/debian-armel/root"
-    echo "  $(basename "$file")"
-  done
-fi
+for p in $DEBIAN_PACKAGES; do
+  [ -e "$DL/debian-armel/.installed-$p" ] && continue
+  read -r file sha < <(awk -v p="$p" '$0=="Package: "p{f=1} f&&/^Filename:/{fn=$2} f&&/^SHA256:/{print fn, $2; exit}' "$DL/debian-armel/Packages")
+  deb="$DL/debian-armel/$(basename "$file")"
+  curl -fsSL "$DEBIAN_MIRROR/$file" -o "$deb"
+  echo "$sha  $deb" | sha256sum -c --quiet
+  dpkg-deb -x "$deb" "$DL/debian-armel/root"
+  touch "$DL/debian-armel/.installed-$p"
+  echo "  $(basename "$file")"
+done
 
 step "patchelf (Python venv)"
 [ -x "$TC/pyenv/bin/patchelf" ] || { python3 -m venv "$TC/pyenv" && "$TC/pyenv/bin/pip" install -q patchelf; }

@@ -161,14 +161,42 @@ real TVs are still needed. Result (inventory 0.10.0, Oct 2026):
 | 26 (11.2) | nothing | 17.1 | LG's own target |
 | 22-25 (7.4-10.2) | nothing | 16.4 / 17.1 | should work as is (CDM 17 untested) |
 | 6 (6.4) | nothing | 16.3 | verified on 6.5.3 |
-| 5 (5.3.1) | `NDL_MediaSetPlayer` (shimmed: single player) | 15.1 | likely works; Widevine proxy needs the v15 CDM interface |
-| 4 (4.4.2, 4.10) | `libsystemd.so.0` (embedder event loop), `libcurl.so.4` (image texture), `NDL_MediaMuteDisplay` | -, 14.0 | needs bundled libsystemd/libcurl and an NDL shim |
+| 5 (5.3.1) | nothing (`NDL_MediaSetPlayer` shimmed: single player) | 15.1 | likely works; Widevine proxy needs the v15 CDM interface |
+| 4 (4.4.2, 4.10) | nothing with `COMPAT_WEBOS4=1` (see below); without it `libsystemd.so.0`, `libcurl.so.4` and the `wl_webos_foreign` protocol | -, 14.0 | starts on paper; no video placement; untested on a TV |
 | 3 (3.4, 3.9) | as webOS 4, plus older Luna C++, i18n and pbnjson APIs, no libudev/libwebp | - | much more work |
 | 1-2 | as webOS 3, plus no Luna C++ library | - | highest risk |
 
 ```sh
 tools/fw-compat-check.py --db <fw-symbols data dir> build/webos/arm/release/bundle/lib/*.so
 ```
+
+### webOS 4 (opt-in, untested on a TV)
+
+webOS 4 firmware lacks three things every app needs: `libsystemd.so.0` (LG's
+media library runs an `sd_event` loop), `libcurl.so.4` (curl is there, but as
+`libcurl.so.5`) and the `wl_webos_foreign` Wayland protocol, which LG's media
+library references and which webOS 4's compositor does not offer. Package with
+`COMPAT_WEBOS4=1` to add:
+
+| Added to `lib/compat/` | Why |
+| --- | --- |
+| `libsystemd.so.0` | Debian's (`libsystemd0`, LGPL-2.1, fetched by `setup.sh`); needs only glibc and the firmware's `libcap.so.2` |
+| `libcurl.so.4` | `compat/fallback`: no code, only a dependency on the firmware's `libcurl.so.5` |
+| `libwebos-foreign-compat.so` | `compat/webos4`: the `wl_webos_foreign` protocol descriptions, generated from webOS OSE's protocol file (Apache-2.0), so the app loads |
+
+`NDL_MediaMuteDisplay` (also missing on webOS 4) is in the media shim for
+every package: it calls the firmware's function where it exists.
+
+```sh
+COMPAT_WEBOS4=1 flutter-webos build webos --release --legacy
+tools/fw-compat-check.py --db <data dir> --webos4 <stage>/<main> <stage>/lib/*.so <stage>/lib/compat/libsystemd.so.0 ...
+```
+
+The firmware check passes for webOS 4.4, 4.10, 5.3 and 6.4. The package does
+**not** suit webOS 7 and newer, which have no `libcurl.so.5`; build those
+without the switch. Video placement cannot work on webOS 4 this way (no
+exported windows); the rest of the app should. Bundled `libsystemd` (systemd
+257) on a webOS 4 kernel is the main unknown until someone runs it on a TV.
 
 ## Tools
 
@@ -241,12 +269,15 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
   `DeviceInfoPlugin().deviceInfo` casts to `LinuxDeviceInfo` and throws.
 - `PlatformDispatcher.displays.first.refreshRate` reports 16666 (the embedder
   passes the frame period in microseconds).
-- Only webOS 6.5.3 has been tested. Releases older than webOS 4 may need more
-  work (older kernels and GPU drivers).
+- Only webOS 6.5.3 has been tested. webOS 4 support (`COMPAT_WEBOS4=1`) is
+  checked only against firmware symbol data. Releases older than webOS 4 need
+  more work (older Luna, i18n and Wayland APIs; older kernels and GPU drivers).
 
 ## Licensing
 
-The bundled glibc (LGPL, from Debian) and C++ runtime (GPL with the runtime
+The bundled glibc (LGPL, from Debian), with `COMPAT_WEBOS4=1` also libsystemd
+(LGPL-2.1, from Debian) and protocol code generated from webOS OSE (Apache-2.0,
+see `compat/webos4/NOTICE`), and the C++ runtime (GPL with the runtime
 exception, from LG's NDK build of GCC) are open source; ship their licences
 and offer the matching sources. LG's engine, embedder and NDK stay under LG's terms;
 check those before distributing repackaged apps outside Developer Mode.
