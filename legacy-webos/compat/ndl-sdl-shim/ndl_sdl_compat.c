@@ -151,10 +151,13 @@ EXPORT int NDL_MediaSubscribeEvents(ndl_cb cb) {
 // linked -z now, so without this symbol the app would not start. Report
 // failure: the licence-callback path is unavailable, licence-URL DRM is not
 // affected.
+static int widevine_deliver(const char *service, const char *session_id, const char *drm_data);
 EXPORT int NDL_MediaSetDrmOperation(const char *system_id, const char *drm_data,
                                     const char *drm_msg_type, const char *service,
                                     const char *kid, const char *session_id, int request_id) {
-  (void)drm_data; (void)service; (void)kid; (void)request_id;
+  (void)kid; (void)request_id;
+  // Licences for sessions of the Widevine CDM proxy go back to it.
+  if (widevine_deliver(service, session_id, drm_data) == 0) return 0;
   fprintf(stderr, "[ndl-compat] NDL_MediaSetDrmOperation(%s, %s, session %s): not on this firmware\n",
           system_id ? system_id : "", drm_msg_type ? drm_msg_type : "", session_id ? session_id : "");
   return -1;
@@ -346,6 +349,82 @@ static char *drm_adapt_option(const char *url, const char *option) {
   return out;
 }
 
+// ---- libwv-compat (loaded on demand) ----
+typedef void (*wv_challenge_fn)(void *, const char *, const uint8_t *, size_t);
+static const char *(*wv_proxy_url)(const char *, const char *);
+static const char *(*wv_proxy_url_cb)(const char *, wv_challenge_fn, void *);
+static int (*wv_deliver)(const char *, const uint8_t *, size_t);
+static int wv_load(void) {
+  if (wv_proxy_url) return 1;
+  void *h = dlopen("libwv-compat.so", RTLD_NOW);
+  if (!h) { fprintf(stderr, "[ndl-compat] widevine: %s\n", dlerror()); return 0; }
+  wv_proxy_url_cb = (const char *(*)(const char *, wv_challenge_fn, void *))dlsym(h, "wvc_proxy_url_cb");
+  wv_deliver = (int (*)(const char *, const uint8_t *, size_t))dlsym(h, "wvc_deliver_licence");
+  wv_proxy_url = (const char *(*)(const char *, const char *))dlsym(h, "wvc_proxy_url");
+  return wv_proxy_url && wv_proxy_url_cb && wv_deliver;
+}
+
+static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static char *b64_encode(const uint8_t *in, size_t n) {
+  char *out = malloc(4 * ((n + 2) / 3) + 1), *o = out;
+  if (!out) return NULL;
+  for (size_t i = 0; i < n; i += 3) {
+    uint32_t v = (uint32_t)in[i] << 16 | (i + 1 < n ? (uint32_t)in[i + 1] << 8 : 0) | (i + 2 < n ? in[i + 2] : 0);
+    *o++ = kB64[v >> 18 & 63];
+    *o++ = kB64[v >> 12 & 63];
+    *o++ = i + 1 < n ? kB64[v >> 6 & 63] : '=';
+    *o++ = i + 2 < n ? kB64[v & 63] : '=';
+  }
+  *o = '\0';
+  return out;
+}
+static size_t b64_decode(const char *in, uint8_t *out) {
+  uint32_t v = 0;
+  int bits = 0;
+  size_t n = 0;
+  for (; *in; in++) {
+    const char *p = strchr(kB64, *in);
+    if (!p || *in == '\0') continue;
+    v = v << 6 | (uint32_t)(p - kB64);
+    if ((bits += 6) >= 8) { bits -= 8; out[n++] = (uint8_t)(v >> bits); }
+  }
+  return n;
+}
+
+#define WV_PROXY_SERVICE "legacy-webos-widevine-proxy"
+static void forward(int slot, char *msg);
+
+// Called by the proxy (its thread) with the CDM's licence request: deliver it
+// to the app's player as the drmEncrypted event webOS 26 NDL would send.
+static void widevine_on_challenge(void *user, const char *session, const uint8_t *challenge, size_t len) {
+  int slot = (int)(intptr_t)user;
+  char *b64 = b64_encode(challenge, len);
+  if (!b64) return;
+  size_t n = strlen(b64) + strlen(session) + 256;
+  char *json = malloc(n);
+  if (json) {
+    snprintf(json, n,
+             "{\"drmEncrypted\":{\"systemId\":\"urn:dvb:casystemid:19156\",\"service\":\"" WV_PROXY_SERVICE
+             "\",\"key\":\"\",\"sessionId\":\"%s\",\"drmMsgType\":\"licenseRequest\",\"drmData\":\"%s\","
+             "\"requestId\":1}}", session, b64);
+    fprintf(stderr, "[ndl-compat] widevine: licence request (%zu bytes) to app, slot %d\n", len, slot);
+    forward(slot, json);
+    free(json);
+  }
+  free(b64);
+}
+
+static int widevine_deliver(const char *service, const char *session_id, const char *drm_data) {
+  if (!service || strcmp(service, WV_PROXY_SERVICE) != 0 || !session_id || !drm_data || !wv_deliver) return -1;
+  uint8_t *lic = malloc(strlen(drm_data));
+  if (!lic) return -1;
+  size_t n = b64_decode(drm_data, lic);
+  int r = wv_deliver(session_id, lic, n);
+  fprintf(stderr, "[ndl-compat] widevine: licence from app (%zu bytes) -> proxy: %d\n", n, r);
+  free(lic);
+  return r;
+}
+
 // Opt-in Widevine route (<app dir>/compat-widevine-cdm): webOS <= 25 cannot
 // play Widevine Modular through URL playback, so serve the stream through
 // libwv-compat's local decrypting proxy (the TV's CDM, software security
@@ -362,17 +441,14 @@ static int widevine_proxy(const char *url, const char *option, char **out_url, c
   if (dl >= sizeof(drm)) return 0;
   memcpy(drm, d, dl);
   drm[dl] = '\0';
-  if (!json_get_string(drm, "type", type, sizeof(type)) || strcasecmp(type, "widevine") != 0 ||
-      !json_get_string(drm, "licenseUrl", lic, sizeof(lic)) || !lic[0])
+  if (!json_get_string(drm, "type", type, sizeof(type)) || strcasecmp(type, "widevine") != 0)
     return 0;
-  static const char *(*proxy_url)(const char *, const char *);
-  if (!proxy_url) {
-    void *h = dlopen("libwv-compat.so", RTLD_NOW);
-    if (!h) { fprintf(stderr, "[ndl-compat] widevine: %s\n", dlerror()); return 0; }
-    proxy_url = (const char *(*)(const char *, const char *))dlsym(h, "wvc_proxy_url");
-    if (!proxy_url) return 0;
-  }
-  const char *local = proxy_url(url, lic);
+  int callback = strstr(drm, "\"useLicenseCallback\":true") != NULL;
+  if (!json_get_string(drm, "licenseUrl", lic, sizeof(lic))) lic[0] = '\0';
+  if (!lic[0] && !callback) return 0;
+  if (!wv_load()) return 0;
+  const char *local = callback ? wv_proxy_url_cb(url, widevine_on_challenge, (void *)(intptr_t)g_cur_slot)
+                               : wv_proxy_url(url, lic);
   if (!local) return 0;
   // Drop the drm block (and the comma before it): the stream is now clear.
   size_t olen = strlen(option);

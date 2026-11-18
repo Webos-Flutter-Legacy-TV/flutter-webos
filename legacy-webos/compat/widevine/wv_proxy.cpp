@@ -14,6 +14,8 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -84,8 +86,25 @@ std::string widevinePssh(const std::string &mpd) {
   return std::string();
 }
 
+// Licence-callback mode: the challenge goes to the app (through the NDL shim,
+// as a webOS 26-style drmEncrypted event) and the licence comes back through
+// wvc_deliver_licence().
+typedef void (*ChallengeFn)(void *user, const char *session, const uint8_t *challenge, size_t len);
+
+struct PendingLicence {
+  std::mutex m;
+  std::condition_variable cv;
+  std::map<std::string, std::string> licences;  // session -> licence
+};
+PendingLicence &pending() {
+  static PendingLicence p;
+  return p;
+}
+
 struct Stream {
   std::string origin_mpd, origin_dir, name, licence_url;
+  ChallengeFn challenge_fn = nullptr;
+  void *challenge_user = nullptr;
   std::mutex m;
   bool licensed = false;
   std::map<std::string, std::unique_ptr<CencState>> files;  // per origin file
@@ -111,8 +130,11 @@ class Proxy {
   }
   int port() const { return port_; }
 
-  int add(const std::string &mpd_url, const std::string &licence_url) {
+  int add(const std::string &mpd_url, const std::string &licence_url,
+          ChallengeFn fn = nullptr, void *user = nullptr) {
     auto s = std::make_shared<Stream>();
+    s->challenge_fn = fn;
+    s->challenge_user = user;
     s->origin_mpd = mpd_url;
     size_t q = mpd_url.find('?');
     std::string path = mpd_url.substr(0, q);
@@ -145,12 +167,31 @@ class Proxy {
 
   bool license(Stream &s, const std::string &pssh) {
     if (!ensureCdm()) return false;
+    std::string challenge, licence, session;
+    {
+      std::lock_guard<std::mutex> l(cdm_m_);
+      if (!host_->startSession(pssh, &session, &challenge)) { log("session: %s", host_->error()); return false; }
+    }
+    if (s.challenge_fn) {
+      // App-side licence: hand out the challenge, wait for the licence.
+      s.challenge_fn(s.challenge_user, session.c_str(),
+                     reinterpret_cast<const uint8_t *>(challenge.data()), challenge.size());
+      PendingLicence &p = pending();
+      std::unique_lock<std::mutex> l(p.m);
+      if (!p.cv.wait_for(l, std::chrono::seconds(30), [&] { return p.licences.count(session) != 0; })) {
+        log("no licence from the app for session %s", session);
+        return false;
+      }
+      licence = p.licences[session];
+      p.licences.erase(session);
+    } else {
+      long http = Host::httpPost(s.licence_url, challenge, "application/octet-stream", &licence);
+      if (http != 200) { log("licence server HTTP %s", std::to_string(http)); return false; }
+    }
     std::lock_guard<std::mutex> l(cdm_m_);
-    std::string challenge, licence;
-    if (!host_->startSession(pssh, &session_, &challenge)) { log("session: %s", host_->error()); return false; }
-    long http = Host::httpPost(s.licence_url, challenge, "application/octet-stream", &licence);
-    if (http != 200 || !host_->updateSession(session_, licence)) {
-      log("licence failed (HTTP %s) %s", std::to_string(http), host_->error());
+    session_ = session;
+    if (!host_->updateSession(session_, licence)) {
+      log("licence rejected: %s", host_->error());
       return false;
     }
     log("licence ok, session %s", session_);
@@ -324,6 +365,32 @@ Proxy *proxy() {
 
 }  // namespace
 }  // namespace wvcompat
+
+// Licence-callback mode: like wvc_proxy_url(), but the licence request is
+// passed to fn (session id + raw challenge) and the licence must be delivered
+// with wvc_deliver_licence().
+extern "C" __attribute__((visibility("default")))
+const char *wvc_proxy_url_cb(const char *origin_mpd, wvcompat::ChallengeFn fn, void *user) {
+  static std::string out;
+  auto *p = wvcompat::proxy();
+  if (!p || !origin_mpd || !fn) return nullptr;
+  int id = p->add(origin_mpd, "", fn, user);
+  auto st = p->stream(id);
+  out = "http://127.0.0.1:" + std::to_string(p->port()) + "/m/" + std::to_string(id) + "/" + st->name;
+  return out.c_str();
+}
+
+extern "C" __attribute__((visibility("default")))
+int wvc_deliver_licence(const char *session, const uint8_t *licence, size_t len) {
+  if (!session || !licence) return -1;
+  wvcompat::PendingLicence &p = wvcompat::pending();
+  {
+    std::lock_guard<std::mutex> l(p.m);
+    p.licences[session].assign(reinterpret_cast<const char *>(licence), len);
+  }
+  p.cv.notify_all();
+  return 0;
+}
 
 // C entry point for the NDL shim. Returns a local URL for the clear stream
 // (static buffer, valid until the next call), or NULL.
