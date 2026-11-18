@@ -12,6 +12,10 @@ mkdir -p "$FW/compat/wayland-shim/out" "$FW/compat/ndl-sdl-shim/out"
 "$CC" -O2 -fPIC -shared -Wall -Wextra -Wl,-soname,libSDL2-2.0.so.0 \
   -o "$FW/compat/ndl-sdl-shim/out/libSDL2-2.0.so.0" \
   "$FW/compat/ndl-sdl-shim/ndl_sdl_compat.c" -ldl
+mkdir -p "$FW/compat/wayland-egl-forward/out"
+"$CC" -O2 -fPIC -shared -Wall -Wextra -fvisibility=hidden -Wl,-soname,libwayland-egl.so.1 \
+  -o "$FW/compat/wayland-egl-forward/out/libwayland-egl.so.1" \
+  "$FW/compat/wayland-egl-forward/wayland_egl_forward.c" -ldl
 "$CC" -O2 -Wall -o "$FW/tools/tv-key/tv-key" "$FW/tools/tv-key/tv-key.c"
 
 # Widevine CDM proxy (C++, needs the NDK's g++ for the CDM's libstdc++ ABI).

@@ -96,13 +96,10 @@ for f in "$STAGE"/lib/*.so; do
   "$PATCHELF" --force-rpath --set-rpath '$ORIGIN/compat:$ORIGIN' "$f"
 done
 
-# Pre-1.15 webOS ships the vendor (Mali) wayland-egl as libwayland-egl.so.0;
-# same API, so point LG's libraries at the old soname.
-for f in "$EXE" "$STAGE"/lib/*.so; do
-  if readelf -dW "$f" | grep -q 'NEEDED.*\[libwayland-egl.so.1\]'; then
-    "$PATCHELF" --replace-needed libwayland-egl.so.1 libwayland-egl.so.0 "$f"
-  fi
-done
+# wayland-egl: firmware ships the vendor (Mali) library as libwayland-egl.so.1
+# or only as the older libwayland-egl.so.0 (same API). Bundle a .so.1 that
+# forwards to whichever the TV has, so LG's NEEDED entry resolves on both.
+cp "$FW/compat/wayland-egl-forward/out/libwayland-egl.so.1" "$STAGE/lib/compat/"
 chmod 755 "$EXE" "$STAGE/lib/compat/"*
 
 "$ARES_PACKAGE" "$STAGE" -o "$OUT" >/dev/null
