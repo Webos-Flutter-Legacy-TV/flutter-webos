@@ -83,7 +83,8 @@ dependencies:
 | `webos_service_bridge` | Use the fork: fixes subscription cancel errors |
 | `audioplayers`, `gamepads`, `webos_image_texture`, `webos_app_manager`, `webos_display`, `connectivity_plus`, `package_info_plus`, `path_provider`, `shared_preferences`, `sqflite`, `url_launcher`, `custom_mouse_cursor`, `flutter_keyboard_visibility` | Work unchanged |
 | `device_info_plus` | Works; call `DeviceInfoWebOSPlugin().webosInfo`, not the generic getter |
-| `audioplayers_soloud`, `flutterfire` | Not tested |
+| `audioplayers_soloud` | Works with the plugins fork after its 2026-11-18 fixes (resume after completion, seek never hangs); no compat changes needed. Known issue: reported position in loop mode |
+| `flutterfire` | Not tested |
 
 ## 5. Things that behave differently
 

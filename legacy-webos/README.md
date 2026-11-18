@@ -23,7 +23,8 @@ Developer Mode:
 | gamepads, flutter_keyboard_visibility, custom_mouse_cursor | Work (API calls; no gamepad attached) |
 | flutter_secure_storage | Works via app-sandbox AES-GCM fallback (no system keystore on webOS 6; see Known issues) |
 | video_player_drm | Clear HLS/DASH and PlayReady (licence URL) play; Widevine plays with the opt-in CDM proxy (software security level) |
-| Not tested | audioplayers_soloud, flutterfire |
+| audioplayers_soloud | Works with plugins fork fixes (2026-11-18): WAV/MP3/Opus from asset, bytes, file and URL; pause, seek, 2x, volume/balance, completion, replay, three players mixed, low-latency retrigger. Output reaches the TV's ALSA hardware sink through PulseAudio. Open: in loop mode the reported position stays at the last seek target after wrapping (`tests/soloud_test`, 21/22) |
+| Not tested | flutterfire |
 | Performance | 50-60 fps for lists and light UI with Impeller; heavy shadow/opacity grids are slow |
 
 ## How it works
