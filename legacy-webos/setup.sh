@@ -18,7 +18,7 @@ DEBIAN_MIRROR="https://deb.debian.org/debian"
 DEBIAN_SUITE=trixie
 # libsystemd0: fallback for webOS 4, whose firmware has no libsystemd.so.0
 # (LG's media library uses its sd_event loop). Needs only glibc and libcap2.
-DEBIAN_PACKAGES="libc6 libsystemd0"
+DEBIAN_PACKAGES="libc6 libsystemd0 libopus0"
 
 step() { printf '\n== %s\n' "$*"; }
 

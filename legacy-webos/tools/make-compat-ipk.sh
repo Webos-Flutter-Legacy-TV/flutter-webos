@@ -101,15 +101,19 @@ done
 # forwards to whichever the TV has, so LG's NEEDED entry resolves on both.
 cp "$FW/compat/wayland-egl-forward/out/libwayland-egl.so.1" "$STAGE/lib/compat/"
 # webOS 4 (opt-in, COMPAT_WEBOS4=1; untested on a TV): the firmware has no
-# libsystemd.so.0 (LG's media library uses its sd_event loop) and ships curl
-# only as libcurl.so.5. Bundle Debian's libsystemd and a libcurl.so.4 that
-# forwards to the firmware's libcurl.so.5. Both sit in lib/compat, ahead of
-# the firmware's libraries, so build webOS 5+ packages without the switch.
+# libsystemd.so.0 (LG's media library uses its sd_event loop) or libopus.so.0
+# (audioplayers_soloud), and ships curl only as libcurl.so.5. Bundle Debian's
+# libsystemd and libopus and a libcurl.so.4 that forwards to the firmware's
+# libcurl.so.5. They sit in lib/compat, ahead of the firmware's libraries, so
+# build webOS 5+ packages without the switch.
 if [ "${COMPAT_WEBOS4:-0}" = 1 ]; then
-  if grep -lq "libsystemd.so.0" "$EXE" "$STAGE"/lib/*.so 2>/dev/null; then
-    [ -e "$GLIBC_LIB/libsystemd.so.0" ] || { echo "libsystemd0 not downloaded; re-run ./setup.sh" >&2; exit 1; }
-    cp -L "$GLIBC_LIB/libsystemd.so.0" "$STAGE/lib/compat/"
-  fi
+  for lib in libsystemd.so.0:libsystemd0 libopus.so.0:libopus0; do
+    so=${lib%%:*}
+    if grep -lq "$so" "$EXE" "$STAGE"/lib/*.so 2>/dev/null; then
+      [ -e "$GLIBC_LIB/$so" ] || { echo "${lib#*:} not downloaded; re-run ./setup.sh" >&2; exit 1; }
+      cp -L "$GLIBC_LIB/$so" "$STAGE/lib/compat/"
+    fi
+  done
   if grep -lq "libcurl.so.4" "$EXE" "$STAGE"/lib/*.so 2>/dev/null; then
     cp "$FW/compat/fallback/out/libcurl.so.4" "$STAGE/lib/compat/"
   fi
@@ -120,10 +124,15 @@ if [ "${COMPAT_WEBOS4:-0}" = 1 ]; then
     cp "$FW/compat/webos4/out/libwebos-foreign-compat.so" "$STAGE/lib/compat/"
     "$PATCHELF" --add-needed libwebos-foreign-compat.so "$EXE"
   fi
-  echo "COMPAT_WEBOS4=1: package for webOS 4 (bundled libsystemd, libcurl.so.4 -> libcurl.so.5, wl_webos_foreign)" >&2
+  echo "COMPAT_WEBOS4=1: package for webOS 4 (bundled libsystemd and libopus, libcurl.so.4 -> libcurl.so.5, wl_webos_foreign)" >&2
 fi
 chmod 755 "$EXE" "$STAGE/lib/compat/"*
 
 "$ARES_PACKAGE" "$STAGE" -o "$OUT" >/dev/null
 IPK=$(ls "$OUT"/*.ipk)
+# Check what the TV's loader depends on (interpreter, DT_RPATH, NEEDED shims,
+# preload patch, webOS 4 extras) in the finished package.
+CHECK_ARGS=()
+[ "${COMPAT_WEBOS4:-0}" = 1 ] && CHECK_ARGS+=(--webos4)
+python3 "$FW/tools/check-compat-ipk.py" "${CHECK_ARGS[@]}" "$IPK"
 echo "$IPK"

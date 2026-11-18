@@ -11,6 +11,16 @@ tag on both.
   libsystemd, a `libcurl.so.4` forwarder to the firmware's `libcurl.so.5`,
   and the `wl_webos_foreign` protocol descriptions; the firmware check passes
   for webOS 4.4, 4.10, 5.3 and 6.4 (#2).
+- webOS 4: also bundles Debian's libopus where a plugin uses it
+  (audioplayers_soloud); found by the new firmware CI.
+- audioplayers_soloud (plugins): position no longer sticks at the seek target
+  after a loop wraps (plugins#1; untested on a TV).
+- `tools/check-compat-ipk.py`: checks every legacy IPK's structure (ELF
+  interpreter, `DT_RPATH`, shims as direct dependencies, preload patch, webOS 4
+  extras only with the switch); the packager runs it on each build.
+- `fw-compat-check.py --require LO[:HI]`: fails if a release in the range
+  does not pass. CI (`fw-compat.yml`) builds every test app, normal and
+  webOS 4, and requires webOS 5+ and 4.4-6 respectively.
 - Media shim: `NDL_MediaMuteDisplay`, forwarded where the firmware has it.
 - `fw-compat-check.py`: `--webos4`; knows the shims' own libraries and
   `NDL_MediaSetPlayer`, no longer flags plugin registration or EGL symbols.

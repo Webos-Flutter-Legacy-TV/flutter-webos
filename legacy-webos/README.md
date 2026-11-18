@@ -177,6 +177,11 @@ real TVs are still needed. Result (inventory 0.10.0, Oct 2026):
 tools/fw-compat-check.py --db <fw-symbols data dir> build/webos/arm/release/bundle/lib/*.so
 ```
 
+`--require LO[:HI]` turns the report into a test: exit 1 unless every image
+with a release from LO up to (not including) HI passes. CI builds every test
+app and requires webOS 5 and newer for normal packages, 4.4 to 6 for
+`COMPAT_WEBOS4=1` ones.
+
 ### webOS 4 (opt-in, untested on a TV)
 
 webOS 4 firmware lacks three things every app needs: `libsystemd.so.0` (LG's
@@ -188,6 +193,7 @@ library references and which webOS 4's compositor does not offer. Package with
 | Added to `lib/compat/` | Why |
 | --- | --- |
 | `libsystemd.so.0` | Debian's (`libsystemd0`, LGPL-2.1, fetched by `setup.sh`); needs only glibc and the firmware's `libcap.so.2` |
+| `libopus.so.0` | Debian's (`libopus0`, BSD-3-Clause), only if a plugin uses it (audioplayers_soloud); needs only glibc |
 | `libcurl.so.4` | `compat/fallback`: no code, only a dependency on the firmware's `libcurl.so.5` |
 | `libwebos-foreign-compat.so` | `compat/webos4`: the `wl_webos_foreign` protocol descriptions, generated from webOS OSE's protocol file (Apache-2.0), so the app loads |
 
@@ -199,7 +205,8 @@ COMPAT_WEBOS4=1 flutter-webos build webos --release --legacy
 tools/fw-compat-check.py --db <data dir> --webos4 <stage>/<main> <stage>/lib/*.so <stage>/lib/compat/libsystemd.so.0 ...
 ```
 
-The firmware check passes for webOS 4.4, 4.10, 5.3 and 6.4. The package does
+The firmware check passes for webOS 4.4, 4.10, 5.3 and 6.4, for every test
+app (CI checks this on each change: `.github/workflows/fw-compat.yml`). The package does
 **not** suit webOS 7 and newer, which have no `libcurl.so.5`; build those
 without the switch. Video placement cannot work on webOS 4 this way (no
 exported windows); the rest of the app should. Bundled `libsystemd` (systemd
@@ -213,6 +220,8 @@ the key is not `~/.ssh/lg_webos`.
 | Tool | Purpose |
 | --- | --- |
 | `tools/make-compat-ipk.sh <app> [mode]` | Repackage a flutter-webos build for older webOS |
+| `tools/check-compat-ipk.py [--webos4] <ipk>` | Check a legacy IPK's structure: loader, `DT_RPATH`, shims as direct dependencies, preload patch, webOS 4 extras (run by the packager on every build) |
+| `tools/fw-compat-check.py` | Check a build against firmware symbol data per webOS release (see above) |
 | `tools/build-shims.sh` | Build the shims and `tv-key` (called by the packager) |
 | `tools/dev-cycle.sh <app> [secs] [--luna]` | Package, install, run, print `compat.log` |
 | `tools/webos-survey.sh` | Read-only survey of a TV's kernel, glibc, graphics and webOS libraries |
@@ -284,7 +293,7 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
 ## Licensing
 
 The bundled glibc (LGPL, from Debian), with `COMPAT_WEBOS4=1` also libsystemd
-(LGPL-2.1, from Debian) and protocol code generated from webOS OSE (Apache-2.0,
+(LGPL-2.1, from Debian), libopus (BSD-3-Clause, from Debian) and protocol code generated from webOS OSE (Apache-2.0,
 see `compat/webos4/NOTICE`), and the C++ runtime (GPL with the runtime
 exception, from LG's NDK build of GCC) are open source; ship their licences
 and offer the matching sources. LG's engine, embedder and NDK stay under LG's terms;
