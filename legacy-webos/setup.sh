@@ -51,6 +51,13 @@ step "patchelf (Python venv)"
 [ -x "$TC/pyenv/bin/patchelf" ] || { python3 -m venv "$TC/pyenv" && "$TC/pyenv/bin/pip" install -q patchelf; }
 
 step "webOS CLI (ares), local npm install"
+# @webos-tools/cli 3.x needs Node.js 20+; Ubuntu 22.04/24.04 ship older ones.
+node_major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+if [ "$node_major" -lt 20 ]; then
+  echo "  Node.js 20 or newer is required (found: $(node --version 2>/dev/null || echo none))." >&2
+  echo "  Install one with nvm: https://github.com/nvm-sh/nvm, then 'nvm install 22' and re-run." >&2
+  exit 1
+fi
 [ -x "$TC/ares/node_modules/.bin/ares-package" ] || npm install --prefix "$TC/ares" @webos-tools/cli --no-fund --no-audit >/dev/null
 
 step "LG webOS NDK $NDK_VERSION (needed by flutter-webos to build apps)"

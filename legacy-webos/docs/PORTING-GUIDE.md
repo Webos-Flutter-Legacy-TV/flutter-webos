@@ -27,7 +27,7 @@ This produces two packages:
 
 | Package | For |
 | --- | --- |
-| `build/webos/arm/release/*.ipk` | webOS 26 (unchanged LG build) |
+| `build/webos/arm/release/ipk/<id>_<version>_arm.ipk` | webOS 26 (unchanged LG build) |
 | `build/webos-compat/release/<id>_<version>_arm.ipk` | older webOS |
 
 The legacy package contains the same app plus, in `lib/compat/`, glibc 2.41,

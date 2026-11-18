@@ -10,7 +10,7 @@ older TV releases. Verified on webOS 6.5.3.
 ```sh
 cd legacy-webos && WEBOS_NDK_ACCEPT_EULA=1 ./setup.sh && . ./env.sh
 cd my_app && flutter-webos build webos --release --legacy
-#   build/webos/arm/release/*.ipk                       webOS 26
+#   build/webos/arm/release/ipk/*.ipk                   webOS 26
 #   build/webos-compat/release/<id>_<version>_arm.ipk   older webOS
 ```
 

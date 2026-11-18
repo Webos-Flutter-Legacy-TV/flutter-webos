@@ -57,7 +57,14 @@ position after Home, volume error at startup) are in
 
 ## Setup
 
-Linux x86_64 host, with `curl`, `xz`, `dpkg-deb`, `python3`, `npm`, `cmake`.
+Ubuntu 22.04/24.04/26.04 x86_64 host (WSL2 works) with LG's build packages and
+Node.js 20 or newer (for the webOS CLI; Ubuntu's own `nodejs` is too old, use
+[nvm](https://github.com/nvm-sh/nvm)):
+
+```sh
+sudo apt-get install -y git git-lfs curl unzip xz-utils file pkg-config cmake ninja-build clang \
+  libgtk-3-dev python3 python3-venv openssh-client
+```
 
 ```sh
 cd legacy-webos
@@ -74,7 +81,7 @@ if you accept its licence, the LG webOS NDK. Nothing is installed system-wide.
 
 ```sh
 cd my_app && flutter-webos build webos --release --legacy
-#   -> build/webos/arm/release/...ipk                         (webOS 26)
+#   -> build/webos/arm/release/ipk/<app-id>_<version>_arm.ipk (webOS 26)
 #   -> build/webos-compat/release/<app-id>_<version>_arm.ipk  (older webOS)
 ```
 
