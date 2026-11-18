@@ -104,12 +104,15 @@ Measured on webOS 6.5.3 at 1080p (`tests/compat_test`, frames per second):
 Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
 `compat-dual-surface`, leaving headroom for heavier frames.
 
-- **Apps without `video_player`**: enable Impeller. All plugin, DRM-licence
-  and input tests pass with it.
-- **Apps with `video_player`**: stay on Skia. With Impeller the video stayed
-  hidden behind the UI in the full-screen stage of `tests/video_test` in 3 of
-  3 runs (fine with Skia in 4 of 4); the plugin's hole draws, but in some
-  layouts it does not let the video show through.
+- **Enable Impeller**, including for apps with `video_player` when they use
+  the Webos-Flutter-Legacy-TV plugins fork (7a53a97 or later). All plugin,
+  DRM-licence and input tests pass with it. A moved or resized video used to
+  stay hidden (always with Impeller, about half the time with Skia): the
+  placement sent while the video moves reaches the compositor while the area
+  is still opaque. The fork places the video again once its hole is visible,
+  and the shim schedules a frame after each placement; with both,
+  `tests/video_test` showed the video in every stage in 3 of 3 Impeller runs.
+  With Skia the small-window stage was still black in 1 of 2 runs.
 - **`compat-dual-surface`** is opt-in: with Impeller, a change drawn just
   before the screen goes static can stay invisible (a `webos_image_texture`
   image did not appear in 5 of 5 runs). It does not happen with a single
@@ -191,6 +194,7 @@ of `popRoute`), `compat-log-ndl` (raw NDL media events),
 frames: GPU time, time blocked in the swap and between presents, waits over
 2 ms by thread and caller, buffer releases; adds a `glFinish` per frame),
 `compat-dual-surface` (alternate two EGL surfaces, see "Renderer and frame rate"),
+`compat-log-exported` (video window placement requests and their regions),
 `compat-swap0` (EGL swap interval 0; no effect on webOS 6.5.3, whose Mali
 configs only allow interval 0). In `tests/compat_test`, `compat-perf` adds
 the frame-timing scenes (`tools/perf-variant.sh` sets it).
@@ -215,11 +219,9 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
   Impeller race (see "Renderer and frame rate"). Even with it, the
   four-large-tiles scene runs at ~54 fps with no slow raster frames; cause
   not found.
-- **Impeller and video**: see "Renderer and frame rate"; video apps should
-  stay on Skia.
-- **video_test "small" stage**: the video was hidden in about half of the
-  runs with either renderer (the 960x540 window after leaving full screen);
-  not yet investigated.
+- **Moved or resized video**: fixed with the plugins fork (see "Renderer and
+  frame rate"); with Skia the 960x540 stage of `tests/video_test` was still
+  black in 1 of 2 runs.
 - **Video**: after a seek, playback resumes 4-7 s later; switching 2x back to
   1x makes the reported position jump back a few seconds; with two players
   only the newest is visible; per-stream volume is not supported by LG's plugin.

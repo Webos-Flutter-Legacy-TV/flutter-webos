@@ -642,6 +642,14 @@ static uint32_t shim_advertised_version(uint32_t name) {
   return 0;
 }
 
+// After a video window is placed (wl_webos_exported set_crop_region /
+// set_exported_window), ask the engine for one more frame, so the app's
+// surface is committed after the placement even on a static screen. Together
+// with video_player re-placing the video once its hole is visible (plugins
+// fork), this made moved videos show reliably with Impeller on webOS 6.5.3;
+// either change alone did not.
+static void shim_schedule_frame_after_placement(void);
+
 __attribute__((visibility("default")))
 struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
                                         const struct wl_interface *interface,
@@ -680,6 +688,30 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
     }
   }
 
+  // <app dir>/compat-log-exported: log requests on webOS exported/foreign
+  // window objects (video plane placement).
+  static int log_exported = -1;
+  if (log_exported < 0) log_exported = shim_app_file_exists("compat-log-exported");
+  if (log_exported && (strstr(iface->name, "export") || strstr(iface->name, "foreign") ||
+                       !strcmp(iface->name, "wl_region"))) {
+    char line[512];
+    int len = snprintf(line, sizeof(line), "[compat] %s.%s v%u (", iface->name,
+                       iface->methods[opcode].name, wl_proxy_get_version(proxy));
+    int k = 0;
+    for (const char *q = sig; *q && k < n && len < (int)sizeof(line) - 40; ++q) {
+      switch (*q) {
+        case 'i': len += snprintf(line + len, sizeof(line) - len, "%d ", args[k++].i); break;
+        case 'u': len += snprintf(line + len, sizeof(line) - len, "%u ", args[k++].u); break;
+        case 'f': len += snprintf(line + len, sizeof(line) - len, "%.1f ", wl_fixed_to_double(args[k++].f)); break;
+        case 's': len += snprintf(line + len, sizeof(line) - len, "\"%s\" ", args[k].s ? args[k].s : ""); k++; break;
+        case 'o': case 'n': len += snprintf(line + len, sizeof(line) - len, "%p ", (void *)args[k++].o); break;
+        case 'a': case 'h': k++; break;
+        default: break;
+      }
+    }
+    fprintf(stderr, "%s)\n", line);
+  }
+
   struct wl_proxy *new_proxy = NULL;
   if (interface) {
     new_proxy = wl_proxy_marshal_array_constructor_versioned(
@@ -687,6 +719,11 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
   } else {
     wl_proxy_marshal_array(proxy, opcode, args);
   }
+
+  if (!strcmp(iface->name, "wl_webos_exported") &&
+      (!strcmp(iface->methods[opcode].name, "set_crop_region") ||
+       !strcmp(iface->methods[opcode].name, "set_exported_window")))
+    shim_schedule_frame_after_placement();
 
   // wl_webos_shell.get_shell_surface (opcode 1): ask the compositor to deliver
   // Back to the app. Without _WEBOS_ACCESS_POLICY_KEYS_BACK, webOS 6 consumes
@@ -772,6 +809,8 @@ typedef struct {
 } ShimProcTablePrefix;
 
 static FlutterEngineHandle g_engine;
+typedef int (*ScheduleFrameFn)(FlutterEngineHandle);
+static ScheduleFrameFn g_schedule_frame;
 static EngineStartFn g_real_run, g_real_initialize;
 static SendPlatformMessageFn g_send_platform_message;
 
@@ -795,6 +834,11 @@ int FlutterEngineGetProcAddresses(ShimProcTablePrefix *table) {
   int r = real ? real(table) : 1;
   if (r == 0 && table && table->struct_size >= sizeof(ShimProcTablePrefix)) {
     g_send_platform_message = table->SendPlatformMessage;
+    // FlutterEngineProcTable.ScheduleFrame: the 35th entry after struct_size
+    // (embedder.h of Flutter 3.38).
+    const size_t sched_off = sizeof(size_t) + 34 * sizeof(void *);
+    if (table->struct_size >= sched_off + sizeof(void *))
+      g_schedule_frame = *(ScheduleFrameFn *)((char *)table + sched_off);
     if (table->Run && table->Run != shim_engine_run) {
       g_real_run = table->Run;
       table->Run = shim_engine_run;
@@ -817,4 +861,10 @@ static void shim_send_pop_route(void) {
                              sizeof(json) - 1, NULL};
   int r = g_send_platform_message(g_engine, &msg);
   if (g_kb_log) fprintf(stderr, "[compat] Back -> popRoute (result %d)\n", r);
+}
+
+static void shim_schedule_frame_after_placement(void) {
+  int r = (g_engine && g_schedule_frame) ? g_schedule_frame(g_engine) : -1;
+  if (shim_app_file_exists("compat-log-exported"))
+    fprintf(stderr, "[compat] video placement: frame scheduled (%d)\n", r);
 }

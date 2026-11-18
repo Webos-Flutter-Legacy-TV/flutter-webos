@@ -43,9 +43,9 @@ Without the flag, the same step can be run on an existing build:
 ## 3. Configure
 
 Renderer, in `webos/meta/flutter-conf.json`: enable Impeller (2-3x faster
-than Skia on the webOS 6 GPU) unless the app uses `video_player`, whose
-video can stay hidden behind the UI with Impeller. See the README section
-"Renderer and frame rate".
+than Skia on the webOS 6 GPU). Apps with `video_player` need the plugins
+fork (7a53a97 or later), which keeps a moved or resized video visible. See
+the README section "Renderer and frame rate".
 
 ```json
 { "engine-switches": { "enable-impeller": true } }
