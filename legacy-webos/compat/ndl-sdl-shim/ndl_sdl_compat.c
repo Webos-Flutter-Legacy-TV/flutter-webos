@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define EXPORT __attribute__((visibility("default")))
 
@@ -345,9 +346,59 @@ static char *drm_adapt_option(const char *url, const char *option) {
   return out;
 }
 
+// Opt-in Widevine route (<app dir>/compat-widevine-cdm): webOS <= 25 cannot
+// play Widevine Modular through URL playback, so serve the stream through
+// libwv-compat's local decrypting proxy (the TV's CDM, software security
+// level) and load the clear stream instead. Returns 1 and fills *out_url /
+// *out_option (malloc'd) when it took over.
+static int widevine_proxy(const char *url, const char *option, char **out_url, char **out_option) {
+  if (!url || !option || !app_file_exists("compat-widevine-cdm")) return 0;
+  const char *d = strstr(option, "\"drm\":{");
+  if (!d) return 0;
+  const char *end = strchr(d, '}');
+  if (!end) return 0;
+  char drm[1024], type[32] = "", lic[1024] = "";
+  size_t dl = (size_t)(end - d + 1);
+  if (dl >= sizeof(drm)) return 0;
+  memcpy(drm, d, dl);
+  drm[dl] = '\0';
+  if (!json_get_string(drm, "type", type, sizeof(type)) || strcasecmp(type, "widevine") != 0 ||
+      !json_get_string(drm, "licenseUrl", lic, sizeof(lic)) || !lic[0])
+    return 0;
+  static const char *(*proxy_url)(const char *, const char *);
+  if (!proxy_url) {
+    void *h = dlopen("libwv-compat.so", RTLD_NOW);
+    if (!h) { fprintf(stderr, "[ndl-compat] widevine: %s\n", dlerror()); return 0; }
+    proxy_url = (const char *(*)(const char *, const char *))dlsym(h, "wvc_proxy_url");
+    if (!proxy_url) return 0;
+  }
+  const char *local = proxy_url(url, lic);
+  if (!local) return 0;
+  // Drop the drm block (and the comma before it): the stream is now clear.
+  size_t olen = strlen(option);
+  char *o = malloc(olen + 1);
+  if (!o) return 0;
+  const char *cut = d;
+  if (cut > option && cut[-1] == ',') cut--;
+  memcpy(o, option, (size_t)(cut - option));
+  strcpy(o + (cut - option), end + 1);
+  *out_url = strdup(local);
+  *out_option = o;
+  fprintf(stderr, "[ndl-compat] widevine: %s -> %s (CDM proxy)\n", url, local);
+  return 1;
+}
+
 EXPORT int NDL_MediaLoadWithOption(const char *url, const char *option) {
   static int (*real)(const char *, const char *);
   if (!real) real = (int (*)(const char *, const char *))dlsym(RTLD_NEXT, "NDL_MediaLoadWithOption");
+  char *wv_url = NULL, *wv_option = NULL;
+  if (widevine_proxy(url, option, &wv_url, &wv_option)) {
+    fprintf(stderr, "[ndl-compat] load option -> %.400s\n", wv_option);
+    int r = real ? real(wv_url, wv_option) : -1;
+    free(wv_url);
+    free(wv_option);
+    return r;
+  }
   char *adapted = drm_adapt_option(url, option);
   if (!adapted) adapted = drm_adapt_callback_type(option);
   if (adapted) fprintf(stderr, "[ndl-compat] drm adapter: load option -> %.400s\n", adapted);
