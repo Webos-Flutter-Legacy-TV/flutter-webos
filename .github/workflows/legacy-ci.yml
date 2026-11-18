@@ -1,0 +1,99 @@
+# Checks for legacy-webos on every pull request and push to main.
+# No TV is needed: scripts are linted, the shims are built with the same
+# webosbrew toolchain setup.sh downloads, and the test apps are analysed.
+# The Widevine proxy is skipped (it needs the LG NDK, whose licence CI does
+# not accept); build-shims.sh already skips it when the NDK is absent.
+name: legacy-webos checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: legacy-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Scripts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: legacy-webos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: for f in *.sh tools/*.sh tools/remote/*.sh; do bash -n "$f"; done
+      - name: ShellCheck
+        run: shellcheck -S warning *.sh tools/*.sh tools/remote/*.sh
+      - name: Python syntax
+        run: python3 -m py_compile tools/*.py
+
+  shims:
+    name: Build shims
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: legacy-webos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain URL
+        id: tc
+        run: echo "url=$(sed -n 's/^BUILDROOT_URL="\(.*\)"$/\1/p' setup.sh)" >> "$GITHUB_OUTPUT"
+      - name: Cache toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: legacy-webos/toolchains/webosbrew
+          key: webosbrew-${{ hashFiles('legacy-webos/setup.sh') }}
+      - name: Download toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchains/webosbrew downloads
+          curl -fsSL "${{ steps.tc.outputs.url }}" -o downloads/buildroot-nc4.tar.gz
+          tar -xzf downloads/buildroot-nc4.tar.gz -C toolchains/webosbrew
+          (cd toolchains/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot && ./relocate-sdk.sh >/dev/null)
+      - name: Build
+        run: tools/build-shims.sh
+      - name: Check outputs
+        run: |
+          set -e
+          for f in compat/wayland-shim/out/libwl-marshal-flags-shim.so \
+                   compat/ndl-sdl-shim/out/libSDL2-2.0.so.0 \
+                   compat/wayland-egl-forward/out/libwayland-egl.so.1 \
+                   tools/tv-key/tv-key; do
+            test -s "$f" || { echo "missing $f"; exit 1; }
+            file "$f"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: legacy-webos-shims
+          path: |
+            legacy-webos/compat/*/out/
+            legacy-webos/tools/tv-key/tv-key
+          retention-days: 14
+
+  analyze:
+    name: Analyze test apps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.38.10
+          channel: stable
+          cache: true
+      - name: Analyze
+        run: |
+          status=0
+          for app in legacy-webos/tests/*/; do
+            echo "::group::$app"
+            (cd "$app" && flutter pub get && flutter analyze --no-fatal-infos) || status=1
+            echo "::endgroup::"
+          done
+          exit $status

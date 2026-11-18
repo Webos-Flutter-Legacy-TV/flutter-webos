@@ -35,7 +35,7 @@ if [ "$SWAP0" = true ]; then : > "$APP/webos/meta/compat-swap0"; else rm -f "$AP
 "$FW/tools/dev-cycle.sh" "$APP" 2 --luna >/dev/null 2>&1 || true
 SSH=(ssh -o LogLevel=ERROR -i "${TV_SSH_KEY:-$HOME/.ssh/lg_webos}" "root@${TV_HOST:?set TV_HOST to the TV IP address}")
 D=/media/developer/apps/usr/palm/applications/com.flutter.app.compat-test
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   sleep 5
   "${SSH[@]}" "grep -q 'run INFO done' $D/compat_results.log 2>/dev/null" && break
 done

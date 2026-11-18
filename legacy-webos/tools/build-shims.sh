@@ -22,6 +22,7 @@ mkdir -p "$FW/compat/wayland-egl-forward/out"
 NDK_ENV="$FW/toolchains/lg-ndk-11.2.0/environment-setup-ca9v1-webosmllib32-linux-gnueabi"
 if [ -e "$NDK_ENV" ]; then
   mkdir -p "$FW/compat/widevine/out"
+  # shellcheck source=/dev/null
   ( . "$NDK_ENV" >/dev/null 2>&1
     $CXX -std=c++17 -O2 -Wall -Wextra -fPIC -shared -fvisibility=hidden \
       -Wl,-soname,libwv-compat.so -o "$FW/compat/widevine/out/libwv-compat.so" \

@@ -35,7 +35,8 @@ done
 try ldd --version | head -1
 
 sec "libstdc++ / libgcc"
-for l in $(ls /usr/lib/libstdc++.so.6* /lib/libstdc++.so.6* 2>/dev/null); do
+for l in /usr/lib/libstdc++.so.6* /lib/libstdc++.so.6*; do
+  [ -e "$l" ] || continue
   echo "$l"
   strings "$l" 2>/dev/null | grep -oE "^GLIBCXX_[0-9.]+$" | sort -t. -k3,3n | tail -1
   strings "$l" 2>/dev/null | grep -oE "^CXXABI_[0-9.]+$" | sort -t. -k3,3n | tail -1

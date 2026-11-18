@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Source me:  . legacy-webos/env.sh
 # Puts flutter-webos, ares, patchelf on PATH and points flutter-webos at the
 # LG NDK installed by setup.sh. Set TV_HOST (and TV_SSH_KEY if not
