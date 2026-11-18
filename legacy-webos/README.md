@@ -43,10 +43,11 @@ order, everything that stopped it from starting on webOS 6:
 | `wl_webos_shell` v2 requested, compositor offers v1 | Shim records advertised versions and clamps binds |
 | Back key never delivered to the app | Shim sets `_WEBOS_ACCESS_POLICY_KEYS_BACK` on the shell surface |
 | The embedder turns the remote's Back (evdev 412) into an Escape key, which Flutter does not treat as navigation | Shim sends `popRoute` on `flutter/navigation` instead, like Android, using the engine handle captured from `FlutterEngineGetProcAddresses` |
-| `libwayland-egl.so.1` missing | Retarget to the vendor `libwayland-egl.so.0` (same API) |
+| Some firmware has only the vendor `libwayland-egl.so.0`, other only `.so.1` | Bundled `libwayland-egl.so.1` (`compat/wayland-egl-forward`) forwards to whichever the TV has |
+| The Mali driver gives each window two buffers and the compositor returns the shown one only once the next is on screen, so `eglMakeCurrent` blocks ~10 ms per frame, leaving ~7 ms to render | Shim gives the window a second EGL surface on the same Wayland surface and alternates frames (four buffers); falls back to the window's own surface while media is loaded, as the second one breaks the video plane's punch-through. `compat-single-surface` turns it off |
 | NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its window from SDL, even for audio | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window, or a placeholder for audio-only players (added when any bundled library links `libNDL_media`) |
 | `drm.licenseUrl` in the load request (webOS 26) is ignored; old releases use a DRM client (`com.webos.service.drm`) | NDL shim translates it: `NDL_MediaDRMLoad`, `NDL_MediaDRMSendMessage` with a `PlayReadyInitiator` (`LA_URL`), then loads with `drm.clientId`; unloads the client at exit |
-| `NDL_MediaSetDrmOperation` missing (video_player_drm, `-z now`) | Shim exports a stub that reports failure (licence-callback DRM unavailable) |
+| `NDL_MediaSetDrmOperation` missing (video_player_drm, `-z now`) | NDL shim exports it: licence responses for the opt-in Widevine proxy, failure otherwise |
 | libwebp < 1.1 lacks `WebPMalloc` (webos_image_texture, linked `-z now`, so the app would not start) | Wayland shim also exports `WebPMalloc` |
 
 The video_player fixes that are not webOS-6 specific (loop position,
@@ -161,7 +162,13 @@ in `compat.log` (next to the installed binary):
 `compat-log-globals` (Wayland globals), `compat-log-keys` (raw Wayland key
 codes), `compat-back-as-key` (deliver Back as the embedder's key event instead
 of `popRoute`), `compat-log-ndl` (raw NDL media events),
-`compat-log-pmlog` (plugin PmLog messages), `compat-swap0` (EGL swap interval 0).
+`compat-log-pmlog` (plugin PmLog messages), `compat-log-swap` (per 120
+frames: GPU time, time blocked in the swap and between presents, waits over
+2 ms by thread and caller, buffer releases; adds a `glFinish` per frame),
+`compat-single-surface` (render to the window's own EGL surface only),
+`compat-swap0` (EGL swap interval 0; no effect on webOS 6.5.3, whose Mali
+configs only allow interval 0). In `tests/compat_test`, `compat-perf` adds
+the frame-timing scenes (`tools/perf-variant.sh` sets it).
 
 ## Test apps
 
@@ -178,8 +185,11 @@ of `popRoute`), `compat-log-ndl` (raw NDL media events),
 
 ## Known issues
 
-- **Frame pacing**: about 14-17 ms of each frame is spent waiting in the
-  raster thread, so light scenes run at 50-55 fps rather than 60.
+- **Frame pacing**: the raster wait that capped light scenes at 50-55 fps is
+  fixed (raster 17 -> 7 ms per frame, heavy scenes +27% fps), except while
+  media is loaded. One test scene (four large animated tiles with `Opacity`
+  and shadows) still runs at ~54 fps with no slow raster frames; the cause is
+  elsewhere and not yet found.
 - **Video**: after a seek, playback resumes 4-7 s later; switching 2x back to
   1x makes the reported position jump back a few seconds; with two players
   only the newest is visible; per-stream volume is not supported by LG's plugin.

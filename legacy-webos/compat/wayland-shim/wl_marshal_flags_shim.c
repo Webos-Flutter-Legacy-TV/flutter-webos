@@ -125,11 +125,41 @@ static void shim_kb_key(void *d, struct wl_proxy *kb, uint32_t serial, uint32_t 
   if (g_kb_user.key) g_kb_user.key(d, kb, serial, time, key, state);
 }
 
+// Buffer tracing (with compat-log-swap): count the window buffers the GPU
+// driver allocates and time each wl_buffer.release from the last present.
+static int wait_on(void);
+static double now_ms(void);
+static double swap_last_ms(void);
+#define BUF_MAX 16
+static struct { struct wl_proxy *p; void (*release)(void *, struct wl_proxy *); } g_bufs[BUF_MAX];
+static int g_nbufs;
+static double g_rel_sum; static int g_rel_n, g_rel_in_mc;
+static int shim_in_make_current(void);
+static void shim_buf_release(void *data, struct wl_proxy *buf) {
+  g_rel_sum += now_ms() - swap_last_ms();
+  g_rel_n++;
+  g_rel_in_mc += shim_in_make_current();
+  for (int i = 0; i < g_nbufs; i++)
+    if (g_bufs[i].p == buf) { g_bufs[i].release(data, buf); return; }
+}
+static void (*const shim_buf_listener[1])(void *, struct wl_proxy *) = {shim_buf_release};
+
 __attribute__((visibility("default")))
 int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
                           void *data) {
   static int (*real)(struct wl_proxy *, void (**)(void), void *);
   if (!real) real = dlsym(RTLD_NEXT, "wl_proxy_add_listener");
+  if (strcmp(wl_proxy_get_class(proxy), "wl_buffer") == 0 && wait_on()) {
+    int i;
+    for (i = 0; i < g_nbufs && g_bufs[i].p != proxy; i++) {}
+    if (i < BUF_MAX) {
+      if (i == g_nbufs) g_nbufs++;
+      g_bufs[i].p = proxy;
+      g_bufs[i].release = (void (*)(void *, struct wl_proxy *))implementation[0];
+      fprintf(stderr, "[compat] wl_buffer #%d %p\n", i, (void *)proxy);
+      return real(proxy, (void (**)(void))shim_buf_listener, data);
+    }
+  }
   if (strcmp(wl_proxy_get_class(proxy), "wl_keyboard") == 0) {
     g_kb_log = shim_app_file_exists("compat-log-keys");
     g_back_as_key = shim_app_file_exists("compat-back-as-key");
@@ -174,6 +204,349 @@ unsigned int eglSwapInterval(void *dpy, int interval) {
   return real ? real(dpy, use) : 0;
 }
 
+// ---------------------------------------------------------------------------
+// Dual surface (default; <app dir>/compat-single-surface turns it off). The Mali driver gives each
+// window surface two buffers and the compositor returns the shown one only
+// after the next is on screen, so eglMakeCurrent blocks ~10 ms per frame and
+// leaves ~7 ms of the 16.7 ms frame for rendering. Give the window a second
+// EGL surface (a twin wl_egl_window on the same wl_surface, from the bundled
+// wayland-egl forwarder) and alternate frames between the two: each buffer is
+// then reused four frames later, long after the compositor released it. The
+// engine only ever sees the first surface. Safe because Mali has no
+// EGL_EXT_buffer_age, so every frame is fully redrawn.
+// ---------------------------------------------------------------------------
+#define MAX_DUAL 4
+static struct { void *s[2]; int cur; } g_dual[MAX_DUAL];
+static int g_dual_on = -1;
+static unsigned int (*real_make_current)(void *, void *, void *, void *);
+static int shim_app_file_exists(const char *name);
+
+static int dual_find(void *surf) {
+  if (!surf) return -1;
+  for (int i = 0; i < MAX_DUAL; i++)
+    if (g_dual[i].s[0] == surf) return i;
+  return -1;
+}
+// True while LG's media library has something loaded (NDL shim), when only
+// the window's own surface may be used (the second one breaks the video
+// plane's punch-through).
+static int dual_media_active(void) {
+  static int (*active)(void);
+  static int looked;
+  if (!looked) {
+    looked = 1;
+    active = (int (*)(void))dlsym(RTLD_DEFAULT, "compat_ndl_media_active");
+  }
+  return active ? active() : 0;
+}
+// The surface to use now for what the engine calls `surf`.
+static void *dual_map(void *surf) {
+  int i = dual_find(surf);
+  return i < 0 ? surf : g_dual[i].s[g_dual[i].cur];
+}
+// For eglMakeCurrent (start of every frame): as dual_map, but go back to the
+// window's own surface at once when media is loaded.
+static void *dual_map_make_current(void *surf) {
+  int i = dual_find(surf);
+  if (i < 0) return surf;
+  if (g_dual[i].cur && dual_media_active()) g_dual[i].cur = 0;
+  return g_dual[i].s[g_dual[i].cur];
+}
+// For a present: the pair's surface that is current on this thread (swaps
+// must target the current surface), else dual_map.
+static void *dual_map_swap(void *surf) {
+  int i = dual_find(surf);
+  if (i < 0) return surf;
+  static void *(*cur_surf)(int);
+  if (!cur_surf) cur_surf = dlsym(RTLD_NEXT, "eglGetCurrentSurface");
+  void *c = cur_surf ? cur_surf(0x3059 /* EGL_DRAW */) : NULL;
+  if (c == g_dual[i].s[0] || c == g_dual[i].s[1]) {
+    g_dual[i].cur = (c == g_dual[i].s[1]);
+    return c;
+  }
+  return g_dual[i].s[g_dual[i].cur];
+}
+static void dual_add(void *dpy, void *config, void *win, const int *attrs, void *surf,
+                     void *(*create)(void *, void *, void *, const int *)) {
+  if (g_dual_on < 0) g_dual_on = !shim_app_file_exists("compat-single-surface");
+  if (!g_dual_on || !surf) return;
+  void *(*twin_fn)(void *) = dlsym(RTLD_DEFAULT, "compat_wl_egl_window_twin");
+  void *twin = twin_fn ? twin_fn(win) : NULL;
+  if (!twin) {
+    fprintf(stderr, "[compat] dual surface: no twin for window %p (%s)\n", win,
+            twin_fn ? "unknown or small window" : "forwarder not loaded");
+    return;
+  }
+  void *second = create(dpy, config, twin, attrs);
+  int i = 0;
+  while (i < MAX_DUAL && g_dual[i].s[0]) i++;
+  if (!second || i == MAX_DUAL) {
+    int (*get_error)(void) = dlsym(RTLD_NEXT, "eglGetError");
+    fprintf(stderr, "[compat] dual surface: second surface failed (EGL error 0x%x)\n",
+            get_error ? get_error() : 0);
+    return;
+  }
+  g_dual[i].s[0] = surf;
+  g_dual[i].s[1] = second;
+  g_dual[i].cur = 0;
+  fprintf(stderr, "[compat] dual surface: %p + %p\n", surf, second);
+}
+// After presenting `surf`: switch to the other surface, and if the engine's
+// surface is current on this thread, make the new one current.
+static void dual_after_swap(void *surf) {
+  int i = dual_find(surf);
+  if (i < 0) return;
+  int next = dual_media_active() ? 0 : g_dual[i].cur ^ 1;
+  if (next == g_dual[i].cur) return;
+  g_dual[i].cur = next;
+  static void *(*cur_ctx)(void), *(*cur_dpy)(void), *(*cur_surf)(int);
+  if (!cur_ctx) {
+    cur_ctx = dlsym(RTLD_NEXT, "eglGetCurrentContext");
+    cur_dpy = dlsym(RTLD_NEXT, "eglGetCurrentDisplay");
+    cur_surf = dlsym(RTLD_NEXT, "eglGetCurrentSurface");
+  }
+  void *old = g_dual[i].s[g_dual[i].cur ^ 1];
+  if (cur_surf && cur_surf(0x3059 /* EGL_DRAW */) == old && real_make_current)
+    real_make_current(cur_dpy(), g_dual[i].s[g_dual[i].cur], g_dual[i].s[g_dual[i].cur], cur_ctx());
+}
+
+// ---------------------------------------------------------------------------
+// Swap timing (diagnostics). With <app dir>/compat-log-swap, every present
+// first waits for the GPU (glFinish) and then swaps, and every 120 frames
+// the log gets: GPU time, time blocked in the swap, and the interval between
+// presents (avg / p90 / max, ms). glFinish serialises the GPU, so use this to
+// find where raster time goes, not to measure frame rate.
+// ---------------------------------------------------------------------------
+#define SWAP_N 120
+static int swap_log = -1;
+static double swap_gpu[SWAP_N], swap_blk[SWAP_N], swap_iv[SWAP_N];
+static int swap_i;
+static double swap_last;
+
+static double now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
+// ---------------------------------------------------------------------------
+// Wait tracing (diagnostics, with compat-log-swap): record poll() calls and
+// Wayland dispatch/roundtrip calls longer than 2 ms, with the caller's
+// library and offset, and print the totals with the swap statistics.
+// ---------------------------------------------------------------------------
+#include <poll.h>
+#include <sys/prctl.h>
+#define WAIT_SITES 24
+static struct { void *site; char fn[64]; double ms; int n; } wait_sites[WAIT_SITES];
+static __thread const char *in_egl;  // EGL call in progress on this thread
+static void wait_record(const char *fn0, void *site, double ms) {
+  if (ms < 2.0) return;
+  char thr[17] = {0}, fn[64];
+  prctl(PR_GET_NAME, thr, 0, 0, 0);
+  snprintf(fn, sizeof(fn), "%s [%s]%s%s", fn0, thr, in_egl ? " in " : "", in_egl ? in_egl : "");
+  for (int i = 0; i < WAIT_SITES; i++) {
+    if (!wait_sites[i].site || (wait_sites[i].site == site && !strcmp(wait_sites[i].fn, fn))) {
+      wait_sites[i].site = site;
+      snprintf(wait_sites[i].fn, sizeof(wait_sites[i].fn), "%s", fn);
+      wait_sites[i].ms += ms;
+      wait_sites[i].n++;
+      return;
+    }
+  }
+}
+static void wait_dump(void) {
+  for (int i = 0; i < WAIT_SITES && wait_sites[i].site; i++) {
+    Dl_info di;
+    const char *lib = "?";
+    uintptr_t off = (uintptr_t)wait_sites[i].site;
+    if (dladdr(wait_sites[i].site, &di) && di.dli_fname) {
+      lib = strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname;
+      off -= (uintptr_t)di.dli_fbase;
+    }
+    fprintf(stderr, "[compat]   wait %s from %s+0x%lx: %d calls, %.1f ms/frame\n", wait_sites[i].fn,
+            lib, (unsigned long)off, wait_sites[i].n, wait_sites[i].ms / SWAP_N);
+  }
+  memset(wait_sites, 0, sizeof(wait_sites));
+}
+static int shim_in_make_current(void) { return in_egl && !strcmp(in_egl, "eglMakeCurrent"); }
+static int wait_on(void) {
+  if (swap_log < 0) swap_log = shim_app_file_exists("compat-log-swap");
+  return swap_log;
+}
+
+__attribute__((visibility("default")))
+int poll(struct pollfd *fds, nfds_t n, int timeout) {
+  static int (*real)(struct pollfd *, nfds_t, int);
+  if (!real) real = dlsym(RTLD_NEXT, "poll");
+  if (!wait_on()) return real(fds, n, timeout);
+  double t = now_ms();
+  int r = real(fds, n, timeout);
+  wait_record("poll", __builtin_return_address(0), now_ms() - t);
+  return r;
+}
+
+#define TIMED_WL(ret, name, params, args)                                      \
+  __attribute__((visibility("default"))) ret name params {                    \
+    static ret(*real) params;                                                 \
+    if (!real) real = dlsym(RTLD_NEXT, #name);                                \
+    if (!wait_on()) return real args;                                         \
+    double t = now_ms();                                                      \
+    ret r = real args;                                                        \
+    wait_record(#name, __builtin_return_address(0), now_ms() - t);            \
+    return r;                                                                 \
+  }
+struct wl_display;
+struct wl_event_queue;
+TIMED_WL(int, wl_display_dispatch, (struct wl_display *d), (d))
+TIMED_WL(int, wl_display_dispatch_queue, (struct wl_display *d, struct wl_event_queue *q), (d, q))
+TIMED_WL(int, wl_display_roundtrip, (struct wl_display *d), (d))
+TIMED_WL(int, wl_display_roundtrip_queue, (struct wl_display *d, struct wl_event_queue *q), (d, q))
+TIMED_WL(int, wl_display_read_events, (struct wl_display *d), (d))
+
+static int cmp_d(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return x < y ? -1 : x > y;
+}
+static void swap_stat(const char *what, double *v) {
+  double s[SWAP_N], sum = 0;
+  memcpy(s, v, sizeof(s));
+  qsort(s, SWAP_N, sizeof(double), cmp_d);
+  for (int i = 0; i < SWAP_N; i++) sum += s[i];
+  fprintf(stderr, " %s %.1f/%.1f/%.1f", what, sum / SWAP_N, s[SWAP_N * 9 / 10], s[SWAP_N - 1]);
+}
+// Wraps one present call; `swap` performs it.
+static unsigned int timed_swap(unsigned int (*swap)(void *, void *, void *, int), void *dpy,
+                               void *surf, void *rects, int n) {
+  if (swap_log < 0) swap_log = shim_app_file_exists("compat-log-swap");
+  if (!swap_log) return swap(dpy, surf, rects, n);
+  static void (*gl_finish)(void);
+  if (!gl_finish) gl_finish = dlsym(RTLD_DEFAULT, "glFinish");
+  double t0 = now_ms();
+  if (gl_finish) gl_finish();
+  double t1 = now_ms();
+  in_egl = "eglSwapBuffers";
+  unsigned int ok = swap(dpy, surf, rects, n);
+  in_egl = NULL;
+  double t2 = now_ms();
+  swap_gpu[swap_i] = t1 - t0;
+  swap_blk[swap_i] = t2 - t1;
+  swap_iv[swap_i] = swap_last > 0 ? t2 - swap_last : 0;
+  swap_last = t2;
+  if (++swap_i == SWAP_N) {
+    swap_i = 0;
+    fprintf(stderr, "[compat] swap avg/p90/max ms:");
+    swap_stat("gpu", swap_gpu);
+    swap_stat("blocked", swap_blk);
+    swap_stat("interval", swap_iv);
+    fputc('\n', stderr);
+    wait_dump();
+    if (g_rel_n) fprintf(stderr, "[compat]   buffers %d, release %.1f ms after the last present (avg of %d, %d inside eglMakeCurrent)\n",
+                         g_nbufs, g_rel_sum / g_rel_n, g_rel_n, g_rel_in_mc);
+    g_rel_sum = 0; g_rel_n = 0; g_rel_in_mc = 0;
+  }
+  return ok;
+}
+
+static double swap_last_ms(void) { return swap_last; }
+static unsigned int (*real_swap)(void *, void *);
+static unsigned int (*real_swap_damage_khr)(void *, void *, void *, int);
+static unsigned int (*real_swap_damage_ext)(void *, void *, void *, int);
+static unsigned int call_swap(void *d, void *s, void *r, int n) { (void)r; (void)n; return real_swap(d, s); }
+static unsigned int call_khr(void *d, void *s, void *r, int n) { return real_swap_damage_khr(d, s, r, n); }
+static unsigned int call_ext(void *d, void *s, void *r, int n) { return real_swap_damage_ext(d, s, r, n); }
+
+__attribute__((visibility("default")))
+unsigned int eglSwapBuffers(void *dpy, void *surf) {
+  if (!real_swap) real_swap = dlsym(RTLD_NEXT, "eglSwapBuffers");
+  unsigned int ok = timed_swap(call_swap, dpy, dual_map_swap(surf), NULL, 0);
+  dual_after_swap(surf);
+  return ok;
+}
+static unsigned int swap_damage_khr(void *dpy, void *surf, void *rects, int n) {
+  unsigned int ok = timed_swap(call_khr, dpy, dual_map_swap(surf), rects, n);
+  dual_after_swap(surf);
+  return ok;
+}
+static unsigned int swap_damage_ext(void *dpy, void *surf, void *rects, int n) {
+  unsigned int ok = timed_swap(call_ext, dpy, dual_map_swap(surf), rects, n);
+  dual_after_swap(surf);
+  return ok;
+}
+
+// The engine looks the damage variants up by name; hand out the wrappers.
+__attribute__((visibility("default")))
+void *eglGetProcAddress(const char *name) {
+  static void *(*real)(const char *);
+  if (!real) real = dlsym(RTLD_NEXT, "eglGetProcAddress");
+  void *p = real(name);
+  if (!p || !name) return p;
+  if (!strcmp(name, "eglSwapBuffersWithDamageKHR")) {
+    real_swap_damage_khr = p;
+    return (void *)swap_damage_khr;
+  }
+  if (!strcmp(name, "eglSwapBuffersWithDamageEXT")) {
+    real_swap_damage_ext = p;
+    return (void *)swap_damage_ext;
+  }
+  if (!strcmp(name, "eglSwapBuffers")) {
+    real_swap = p;
+    return (void *)eglSwapBuffers;
+  }
+  return p;
+}
+
+// Log the swap-interval range of each window surface's config.
+__attribute__((visibility("default")))
+void *eglCreateWindowSurface(void *dpy, void *config, void *win, const int *attrs) {
+  static void *(*real)(void *, void *, void *, const int *);
+  static unsigned int (*attr)(void *, void *, int, int *);
+  if (!real) {
+    real = dlsym(RTLD_NEXT, "eglCreateWindowSurface");
+    attr = dlsym(RTLD_NEXT, "eglGetConfigAttrib");
+  }
+  void *surf = real(dpy, config, win, attrs);
+  dual_add(dpy, config, win, attrs, surf, real);
+  int mn = -1, mx = -1;
+  if (attr) {
+    attr(dpy, config, 0x303B /* EGL_MIN_SWAP_INTERVAL */, &mn);
+    attr(dpy, config, 0x303C /* EGL_MAX_SWAP_INTERVAL */, &mx);
+  }
+  fprintf(stderr, "[compat] window surface %p: swap interval %d..%d\n", surf, mn, mx);
+  return surf;
+}
+
+__attribute__((visibility("default")))
+unsigned int eglQuerySurface(void *dpy, void *surf, int attr, int *value) {
+  static unsigned int (*real)(void *, void *, int, int *);
+  if (!real) real = dlsym(RTLD_NEXT, "eglQuerySurface");
+  in_egl = "eglQuerySurface";
+  unsigned int ok = real(dpy, dual_map(surf), attr, value);
+  in_egl = NULL;
+  return ok;
+}
+
+// The engine must see its own surface, not the twin.
+__attribute__((visibility("default")))
+void *eglGetCurrentSurface(int which) {
+  static void *(*real)(int);
+  if (!real) real = dlsym(RTLD_NEXT, "eglGetCurrentSurface");
+  void *s = real(which);
+  for (int i = 0; s && i < MAX_DUAL; i++)
+    if (g_dual[i].s[1] == s) return g_dual[i].s[0];
+  return s;
+}
+
+__attribute__((visibility("default")))
+unsigned int eglDestroySurface(void *dpy, void *surf) {
+  static unsigned int (*real)(void *, void *);
+  if (!real) real = dlsym(RTLD_NEXT, "eglDestroySurface");
+  int i = dual_find(surf);
+  if (i >= 0) {
+    real(dpy, g_dual[i].s[1]);
+    g_dual[i].s[0] = g_dual[i].s[1] = NULL;
+  }
+  return real(dpy, surf);
+}
+
 // The embedder never calls eglSwapInterval itself (EGL default, normally 1),
 // so apply the A/B override when a surface is made current.
 __attribute__((visibility("default")))
@@ -185,7 +558,12 @@ unsigned int eglMakeCurrent(void *dpy, void *draw, void *read, void *ctx) {
     real = dlsym(RTLD_NEXT, "eglMakeCurrent");
     swap_interval = dlsym(RTLD_NEXT, "eglSwapInterval");
   }
+  real_make_current = real;
+  draw = dual_map_make_current(draw);
+  read = dual_map(read);
+  in_egl = "eglMakeCurrent";
   unsigned int ok = real(dpy, draw, read, ctx);
+  in_egl = NULL;
   if (force0 < 0) force0 = shim_app_file_exists("compat-swap0");
   if (ok && force0 && draw && swap_interval) {
     static __thread void *last_draw;

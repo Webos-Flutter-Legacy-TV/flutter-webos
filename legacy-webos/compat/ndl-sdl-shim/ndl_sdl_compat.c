@@ -466,6 +466,26 @@ static int widevine_proxy(const char *url, const char *option, char **out_url, c
   return 1;
 }
 
+// Media loaded per player slot. The Wayland shim asks for this through
+// compat_ndl_media_active(): while a video plane may be shown it renders to
+// the window's own EGL surface only (its dual-surface mode breaks the video
+// punch-through).
+static int g_loaded[NDL_MAX_SLOTS];
+static void mark_loaded(int r) {
+  if (r == 0 && g_cur_slot >= 0 && g_cur_slot < NDL_MAX_SLOTS) g_loaded[g_cur_slot] = 1;
+}
+EXPORT int compat_ndl_media_active(void) {
+  int n = 0;
+  for (int i = 0; i < NDL_MAX_SLOTS; i++) n += g_loaded[i];
+  return n;
+}
+EXPORT int NDL_MediaUnload(void) {
+  static int (*real)(void);
+  if (!real) real = (int (*)(void))dlsym(RTLD_NEXT, "NDL_MediaUnload");
+  if (g_cur_slot >= 0 && g_cur_slot < NDL_MAX_SLOTS) g_loaded[g_cur_slot] = 0;
+  return real ? real() : -1;
+}
+
 EXPORT int NDL_MediaLoadWithOption(const char *url, const char *option) {
   static int (*real)(const char *, const char *);
   if (!real) real = (int (*)(const char *, const char *))dlsym(RTLD_NEXT, "NDL_MediaLoadWithOption");
@@ -473,6 +493,7 @@ EXPORT int NDL_MediaLoadWithOption(const char *url, const char *option) {
   if (widevine_proxy(url, option, &wv_url, &wv_option)) {
     fprintf(stderr, "[ndl-compat] load option -> %.400s\n", wv_option);
     int r = real ? real(wv_url, wv_option) : -1;
+    mark_loaded(r);
     free(wv_url);
     free(wv_option);
     return r;
@@ -481,6 +502,7 @@ EXPORT int NDL_MediaLoadWithOption(const char *url, const char *option) {
   if (!adapted) adapted = drm_adapt_callback_type(option);
   if (adapted) fprintf(stderr, "[ndl-compat] drm adapter: load option -> %.400s\n", adapted);
   int r = real ? real(url, adapted ? adapted : option) : -1;
+  mark_loaded(r);
   free(adapted);
   return r;
 }
