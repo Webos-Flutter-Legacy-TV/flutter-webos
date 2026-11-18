@@ -113,6 +113,28 @@ Google ship it under, and the device certificate could be revoked. Use at your
 own risk. `compat/widevine/out/wv-selftest` (built by `build-shims.sh`) checks
 the CDM, provisioning and a licence round trip from inside an app's jail.
 
+## Other webOS releases (paper check)
+
+`tools/fw-compat-check.py` checks, against webosbrew's firmware symbol
+inventory (one image per release), whether every system library and function
+LG's engine, embedder and plugins use exists, after legacy-webos's bundling
+and shims. It cannot see kernel, Wayland protocol or GPU driver versions, so
+real TVs are still needed. Result (inventory 0.10.0, Oct 2026):
+
+| webOS | Missing on that firmware | Widevine CDM | Outlook |
+| --- | --- | --- | --- |
+| 26 (11.2) | nothing | 17.1 | LG's own target |
+| 22-25 (7.4-10.2) | nothing | 16.4 / 17.1 | should work as is (CDM 17 untested) |
+| 6 (6.4) | nothing | 16.3 | verified on 6.5.3 |
+| 5 (5.3.1) | `NDL_MediaSetPlayer` (shimmed: single player) | 15.1 | likely works; Widevine proxy needs the v15 CDM interface |
+| 4 (4.4.2, 4.10) | `libsystemd.so.0` (embedder event loop), `libcurl.so.4` (image texture), `NDL_MediaMuteDisplay` | -, 14.0 | needs bundled libsystemd/libcurl and an NDL shim |
+| 3 (3.4, 3.9) | as webOS 4, plus older Luna C++, i18n and pbnjson APIs, no libudev/libwebp | - | much more work |
+| 1-2 | as webOS 3, plus no Luna C++ library | - | highest risk |
+
+```sh
+tools/fw-compat-check.py --db <fw-symbols data dir> build/webos/arm/release/bundle/lib/*.so
+```
+
 ## Tools
 
 The TV tools use SSH as root (rooted TV). Set `TV_HOST`, and `TV_SSH_KEY` if
