@@ -133,7 +133,9 @@ EXPORT int NDL_MediaSetPlayer(int slot) {
   static int (*real)(int);
   if (!real) real = (int (*)(int))dlsym(RTLD_NEXT, "NDL_MediaSetPlayer");
   if (slot >= 0 && slot < NDL_MAX_SLOTS) g_cur_slot = slot;
-  return real ? real(slot) : -1;
+  // webOS <= 5 NDL has a single player and no NDL_MediaSetPlayer: accept slot 0
+  // (one player at a time) and refuse others.
+  return real ? real(slot) : (slot == 0 ? 0 : -1);
 }
 
 EXPORT int NDL_MediaSubscribeEvents(ndl_cb cb) {
