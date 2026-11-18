@@ -9,6 +9,7 @@ import 'package:flutter_tools/src/base/analyze_size.dart';
 import 'package:flutter_tools/src/base/common.dart';
 import 'package:flutter_tools/src/base/os.dart';
 import 'package:flutter_tools/src/build_info.dart';
+import 'package:flutter_tools/src/cache.dart';
 import 'package:flutter_tools/src/commands/build.dart';
 import 'package:flutter_tools/src/commands/build_apk.dart';
 import 'package:flutter_tools/src/globals.dart' as globals;
@@ -82,6 +83,14 @@ class BuildPackageCommand extends BuildSubCommand with WebosExtension, WebosRequ
     argParser.addOption(
       'target-compiler-flags',
       help: 'The extra compile flags to be applied to C and C++ compiler',
+    );
+    argParser.addFlag(
+      'legacy',
+      negatable: false,
+      help: 'Also package the app for older webOS TVs (webOS 25 and earlier) '
+          'with legacy-webos: bundles a newer C library and compatibility '
+          'shims. Writes build/webos-compat/<mode>/<id>_<version>_arm.ipk. '
+          'Requires legacy-webos/setup.sh to have been run.',
     );
     argParser.addOption(
       'parallel',
@@ -157,7 +166,31 @@ class BuildPackageCommand extends BuildSubCommand with WebosExtension, WebosRequ
       ),
     );
 
+    if (boolArg('legacy')) {
+      final int code = await _packageLegacy(webosBuildInfo);
+      if (code != 0) {
+        throwToolExit('legacy-webos packaging failed (exit code $code).');
+      }
+    }
+
     return FlutterCommandResult.success();
+  }
+
+  /// Runs legacy-webos/tools/make-compat-ipk.sh on the bundle just built.
+  Future<int> _packageLegacy(WebosBuildInfo webosBuildInfo) async {
+    if (webosBuildInfo.targetArch != 'arm') {
+      throwToolExit('--legacy supports only --target-arch=arm (older webOS TVs are 32-bit).');
+    }
+    final String script = globals.fs.path.normalize(globals.fs.path.join(
+        Cache.flutterRoot!, '..', 'legacy-webos', 'tools', 'make-compat-ipk.sh'));
+    if (!globals.fs.file(script).existsSync()) {
+      throwToolExit('legacy-webos not found at $script');
+    }
+    final String mode = webosBuildInfo.buildInfo.mode.cliName;
+    globals.logger.printStatus('Packaging for older webOS (legacy-webos)...');
+    return globals.processUtils.stream(
+      <String>[script, FlutterProject.current().directory.path, mode],
+    );
   }
 
   String _getCurrentHostPlatformArchName() {
