@@ -15,7 +15,7 @@ Developer Mode:
 | Remote Back | Works: pops the current route; on the last route the app exits |
 | DNS, HTTP, HTTPS (certificate verification) | Works |
 | path_provider, shared_preferences, sqflite | Works; data survives reinstall |
-| video_player (network MP4) | Works: play, pause, seek, 2x, resized window, two players, Home/resume |
+| video_player (network MP4) | Works: play, pause, seek, 2x, resized window, Home/resume. Two players both play, but only the newest is visible (one video plane) |
 | audioplayers (network MP3) | Works |
 | webos_service_bridge (Luna calls + subscriptions), webos_app_manager, webos_display | Works |
 | device_info_plus (`webosInfo`), package_info_plus, connectivity_plus | Works |

@@ -214,6 +214,9 @@ class _VideoPageState extends State<VideoPage> {
       final a1 = posA, b1 = b.value.position.inMilliseconds;
       result('two.both_advance', a1 - a0 > 4000 && b1 != b0,
           'A advanced ${a1 - a0}ms, B position $b0 -> ${b1}ms ${bError.isEmpty ? '' : 'B error: $bError'}');
+      // Decoding is all this checks: the TV has one video plane, so only B
+      // (the newest player) is on screen and A plays unseen.
+      log('two.visible INFO only the newest player (B, corner) is visible: one video plane');
     } catch (e) {
       result('two.both_advance', false, 'second player failed: $e $bError');
     }
