@@ -19,7 +19,9 @@ tag on both.
   libwayland < 1.4 and emulates `prepare_read`/`read_events`/`cancel_read` on
   < 1.2; `libwebos3-compat` adds `LSRegisterApplicationService` (falls back to
   `LSRegister`) and `g_unix_fd_source_new`. The shim's timing wrappers no
-  longer call a missing function.
+  longer call a missing function. Media and image plugins are not covered on
+  webOS 2: its pbnjson 2.9 has no `JResult`, so every `JValue` the plugins
+  use has another layout there; that needs a bundled newer pbnjson.
 - Wayland shim: works with libwayland < 1.10 (webOS 3), which has no
   `wl_proxy_get_version` or versioned constructor; it records proxy versions
   itself there. Found because the firmware check now also checks the bundled

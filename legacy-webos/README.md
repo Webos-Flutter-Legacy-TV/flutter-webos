@@ -178,7 +178,7 @@ real TVs are still needed. Result (inventory 0.10.0, Oct 2026):
 | 5 (5.3.1) | nothing (`NDL_MediaSetPlayer` shimmed: single player) | 15.1 | likely works; Widevine proxy needs the v15 CDM interface |
 | 4 (4.4.2, 4.10) | nothing with `COMPAT_WEBOS4=1` (see below); without it `libsystemd.so.0`, `libcurl.so.4` and the `wl_webos_foreign` protocol | -, 14.0 | starts on paper; no video placement; untested on a TV |
 | 3 (3.4, 3.9) | nothing with `COMPAT_WEBOS3=1` (see below); without it as webOS 4, plus older Luna C++, i18n and pbnjson APIs, Wayland < 1.10, no `libudev.so.1`/libwebp | - | starts on paper; no video placement; untested on a TV |
-| 2 (2.2) | with `COMPAT_WEBOS3=1`: nothing for apps without media plugins; media and image plugins need four newer pbnjson C++ functions | - | core app starts on paper; untested on a TV |
+| 2 (2.2) | with `COMPAT_WEBOS3=1`: nothing for apps without media plugins. Media and image plugins use pbnjson's C++ API, and webOS 2's pbnjson 2.9 predates `JResult`, so its `JValue` has another layout: they need a newer pbnjson bundled (not done) | - | core app starts on paper; untested on a TV |
 | 1 (1.2, 1.4) | with `COMPAT_WEBOS3=1` also older Luna, PmLog and Wayland APIs and more webOS protocols | - | highest risk |
 
 ```sh
