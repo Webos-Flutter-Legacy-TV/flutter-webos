@@ -92,6 +92,11 @@ if [ -e "$STAGE/compat-widevine-cdm" ]; then
   [ -e "$FW/compat/widevine/out/libwv-compat.so" ] || { echo "libwv-compat.so not built (needs the LG NDK)" >&2; exit 1; }
   cp "$FW/compat/widevine/out/libwv-compat.so" "$STAGE/lib/compat/"
 fi
+# Opt-in hardware Widevine player (secure video path): webos/meta/compat-widevine-l1.
+if [ -e "$STAGE/compat-widevine-l1" ]; then
+  [ -e "$FW/compat/widevine-l1/out/libwv-l1.so" ] || { echo "libwv-l1.so not built (needs the LG NDK)" >&2; exit 1; }
+  cp "$FW/compat/widevine-l1/out/libwv-l1.so" "$STAGE/lib/compat/"
+fi
 for f in "$STAGE"/lib/*.so; do
   "$PATCHELF" --force-rpath --set-rpath '$ORIGIN/compat:$ORIGIN' "$f"
 done

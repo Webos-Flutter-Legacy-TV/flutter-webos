@@ -493,16 +493,90 @@ EXPORT int compat_ndl_media_active(void) {
   for (int i = 0; i < NDL_MAX_SLOTS; i++) n += g_loaded[i];
   return n;
 }
+// Opt-in hardware Widevine route (<app dir>/compat-widevine-l1): Widevine
+// DASH with a licence URL plays through libwv-l1.so (the TV's CDM wrapper
+// and its StarfishMediaAPIs player, secure video path) instead of NDL. The
+// player control calls of that slot go to it, and it sends NDL-style events.
+static int g_l1_slot = -1;
+static struct {
+  int (*load)(const char *, const char *, void (*)(void *, const char *), void *);
+  int (*play)(void), (*pause)(void), (*seek)(long long), (*rate)(double), (*unload)(void);
+} l1;
+static int l1_active(void) { return g_l1_slot >= 0 && g_l1_slot == g_cur_slot; }
+static void l1_emit(void *user, const char *json) {
+  int slot = (int)(intptr_t)user;
+  char *m = strdup(json);
+  if (m) { forward(slot, m); free(m); }
+}
+static int widevine_l1(const char *url, const char *option) {
+  if (!url || !option || !app_file_exists("compat-widevine-l1")) return 0;
+  const char *d = strstr(option, "\"drm\":{");
+  if (!d) return 0;
+  char type[32] = "", lic[16];
+  if (!json_get_string(d, "type", type, sizeof(type)) || strcasecmp(type, "widevine") != 0) return 0;
+  if (!json_get_string(d, "licenseUrl", lic, sizeof(lic)) || !lic[0]) {
+    fprintf(stderr, "[ndl-compat] widevine-l1: licence callback not supported yet; using NDL\n");
+    return 0;
+  }
+  if (!l1.load) {
+    void *h = dlopen("libwv-l1.so", RTLD_NOW);
+    if (!h) { fprintf(stderr, "[ndl-compat] widevine-l1: %s\n", dlerror()); return 0; }
+    l1.load = (int (*)(const char *, const char *, void (*)(void *, const char *), void *))dlsym(h, "wvl1_load");
+    l1.play = (int (*)(void))dlsym(h, "wvl1_play");
+    l1.pause = (int (*)(void))dlsym(h, "wvl1_pause");
+    l1.seek = (int (*)(long long))dlsym(h, "wvl1_seek");
+    l1.rate = (int (*)(double))dlsym(h, "wvl1_set_rate");
+    l1.unload = (int (*)(void))dlsym(h, "wvl1_unload");
+    if (!l1.load || !l1.play || !l1.pause || !l1.seek || !l1.rate || !l1.unload) { l1.load = NULL; return 0; }
+  }
+  g_l1_slot = g_cur_slot;
+  fprintf(stderr, "[ndl-compat] widevine-l1: %s (slot %d) -> libwv-l1\n", url, g_l1_slot);
+  return l1.load(url, option, l1_emit, (void *)(intptr_t)g_l1_slot) == 0;
+}
+
+EXPORT int NDL_MediaPlay(void) {
+  static int (*real)(void);
+  if (l1_active()) return l1.play();
+  if (!real) real = (int (*)(void))dlsym(RTLD_NEXT, "NDL_MediaPlay");
+  return real ? real() : -1;
+}
+EXPORT int NDL_MediaPause(void) {
+  static int (*real)(void);
+  if (l1_active()) return l1.pause();
+  if (!real) real = (int (*)(void))dlsym(RTLD_NEXT, "NDL_MediaPause");
+  return real ? real() : -1;
+}
+EXPORT int NDL_MediaSeekTo(long long position) {
+  static int (*real)(long long);
+  if (l1_active()) return l1.seek(position);
+  if (!real) real = (int (*)(long long))dlsym(RTLD_NEXT, "NDL_MediaSeekTo");
+  return real ? real(position) : -1;
+}
+EXPORT int NDL_MediaSetPlaybackRate(double rate) {
+  static int (*real)(double);
+  if (l1_active()) return l1.rate(rate);
+  if (!real) real = (int (*)(double))dlsym(RTLD_NEXT, "NDL_MediaSetPlaybackRate");
+  return real ? real(rate) : -1;
+}
+
 EXPORT int NDL_MediaUnload(void) {
   static int (*real)(void);
   if (!real) real = (int (*)(void))dlsym(RTLD_NEXT, "NDL_MediaUnload");
   if (g_cur_slot >= 0 && g_cur_slot < NDL_MAX_SLOTS) g_loaded[g_cur_slot] = 0;
+  if (l1_active()) {
+    g_l1_slot = -1;
+    return l1.unload();
+  }
   return real ? real() : -1;
 }
 
 EXPORT int NDL_MediaLoadWithOption(const char *url, const char *option) {
   static int (*real)(const char *, const char *);
   if (!real) real = (int (*)(const char *, const char *))dlsym(RTLD_NEXT, "NDL_MediaLoadWithOption");
+  if (widevine_l1(url, option)) {
+    mark_loaded(0);
+    return 0;
+  }
   char *wv_url = NULL, *wv_option = NULL;
   if (widevine_proxy(url, option, &wv_url, &wv_option)) {
     fprintf(stderr, "[ndl-compat] load option -> %.400s\n", wv_option);
