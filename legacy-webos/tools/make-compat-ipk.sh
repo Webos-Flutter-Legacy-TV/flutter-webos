@@ -106,6 +106,9 @@ cp "$FW/compat/wayland-egl-forward/out/libwayland-egl.so.1" "$STAGE/lib/compat/"
 # libsystemd and libopus and a libcurl.so.4 that forwards to the firmware's
 # libcurl.so.5. They sit in lib/compat, ahead of the firmware's libraries, so
 # build webOS 5+ packages without the switch.
+# COMPAT_WEBOS3=1 (opt-in; untested on a TV) includes everything COMPAT_WEBOS4
+# adds, plus the webOS 3 libraries below.
+[ "${COMPAT_WEBOS3:-0}" = 1 ] && COMPAT_WEBOS4=1
 if [ "${COMPAT_WEBOS4:-0}" = 1 ]; then
   for lib in libsystemd.so.0:libsystemd0 libopus.so.0:libopus0; do
     so=${lib%%:*}
@@ -126,13 +129,45 @@ if [ "${COMPAT_WEBOS4:-0}" = 1 ]; then
   fi
   echo "COMPAT_WEBOS4=1: package for webOS 4 (bundled libsystemd and libopus, libcurl.so.4 -> libcurl.so.5, wl_webos_foreign)" >&2
 fi
+# webOS 3 (opt-in, COMPAT_WEBOS3=1; untested on a TV). See compat/webos3/NOTICE.
+#  - libluna-service2++.so.3 built from webOS OSE sources: webOS 3's copy has an
+#    older LS::Call (inline constructor/destructor, different reply context).
+#    No firmware library LG's binaries load on webOS 3 uses it.
+#  - libwebos3-compat.so (NEEDED by the app binary, so it is in the global
+#    scope): ResBundle with the C++11 string ABI, LSErrorLogDefault,
+#    LSMessageIsConnected, two pbnjson C++ functions, two newer sqlite3
+#    functions and the wl_webos_xinput protocol descriptions.
+#  - where plugins need them: a libudev.so.1 stand-in and Debian's libwebp.
+if [ "${COMPAT_WEBOS3:-0}" = 1 ]; then
+  for f in libwebos3-compat.so libluna-service2++.so.3; do
+    [ -e "$FW/compat/webos3/out/$f" ] || { echo "$f not built (needs the LG NDK)" >&2; exit 1; }
+  done
+  cp "$FW/compat/webos3/out/libwebos3-compat.so" "$STAGE/lib/compat/"
+  "$PATCHELF" --add-needed libwebos3-compat.so "$EXE"
+  if grep -lq "libluna-service2++.so.3" "$EXE" "$STAGE"/lib/*.so 2>/dev/null; then
+    cp "$FW/compat/webos3/out/libluna-service2++.so.3" "$STAGE/lib/compat/"
+  fi
+  # gamepads: libudev.so.1 stand-in (compat/webos3/udev_compat.c).
+  if grep -lq "libudev.so.1" "$STAGE"/lib/*.so 2>/dev/null; then
+    cp "$FW/compat/webos3/out/libudev.so.1" "$STAGE/lib/compat/"
+  fi
+  # webos_image_texture: Debian's libwebp (webOS 3 has none).
+  if grep -lq "libwebp.so.7" "$STAGE"/lib/*.so 2>/dev/null; then
+    for so in libwebp.so.7 libwebpdemux.so.2 libsharpyuv.so.0; do
+      [ -e "$GLIBC_LIB/$so" ] || { echo "$so not downloaded; re-run ./setup.sh" >&2; exit 1; }
+      cp -L "$GLIBC_LIB/$so" "$STAGE/lib/compat/"
+    done
+  fi
+  echo "COMPAT_WEBOS3=1: package for webOS 3 (also: luna-service2++ from webOS OSE, libwebos3-compat, udev/webp where used)" >&2
+fi
 chmod 755 "$EXE" "$STAGE/lib/compat/"*
 
 "$ARES_PACKAGE" "$STAGE" -o "$OUT" >/dev/null
 IPK=$(ls "$OUT"/*.ipk)
 # Check what the TV's loader depends on (interpreter, DT_RPATH, NEEDED shims,
-# preload patch, webOS 4 extras) in the finished package.
+# preload patch, webOS 4 and webOS 3 extras) in the finished package.
 CHECK_ARGS=()
 [ "${COMPAT_WEBOS4:-0}" = 1 ] && CHECK_ARGS+=(--webos4)
+[ "${COMPAT_WEBOS3:-0}" = 1 ] && CHECK_ARGS+=(--webos3)
 python3 "$FW/tools/check-compat-ipk.py" "${CHECK_ARGS[@]}" "$IPK"
 echo "$IPK"

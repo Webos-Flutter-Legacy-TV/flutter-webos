@@ -54,13 +54,118 @@ struct shim_wl_object {
 };
 
 // ---------------------------------------------------------------------------
+// Proxy versions on libwayland < 1.10 (webOS 3.x and older).
+// wl_proxy_get_version() and wl_proxy_marshal_array_constructor_versioned()
+// appeared in libwayland 1.10. Where the firmware has them (webOS 4+), the
+// shim forwards to them. Otherwise it creates proxies with the unversioned
+// constructor and remembers the version itself: the bind version (after
+// clamping) for globals and, as libwayland does, the version passed in by the
+// generated code (the parent's version) for child objects. Proxies the shim
+// did not create (e.g. made inside the EGL library) report 0, which is what
+// libwayland reports for unversioned proxies.
+// ---------------------------------------------------------------------------
+#include <dlfcn.h>
+#include <pthread.h>
+
+static int shim_app_file_exists(const char *name);
+static uint32_t (*real_get_version)(struct wl_proxy *);
+static struct wl_proxy *(*real_ctor_versioned)(struct wl_proxy *, uint32_t, union wl_argument *,
+                                               const struct wl_interface *, uint32_t);
+static void (*real_proxy_destroy)(struct wl_proxy *);
+static pthread_once_t g_ver_once = PTHREAD_ONCE_INIT;
+static void shim_resolve_versions(void) {
+  real_get_version = (uint32_t (*)(struct wl_proxy *))dlsym(RTLD_NEXT, "wl_proxy_get_version");
+  real_ctor_versioned = (struct wl_proxy *(*)(struct wl_proxy *, uint32_t, union wl_argument *,
+                                              const struct wl_interface *, uint32_t))
+      dlsym(RTLD_NEXT, "wl_proxy_marshal_array_constructor_versioned");
+  real_proxy_destroy = (void (*)(struct wl_proxy *))dlsym(RTLD_NEXT, "wl_proxy_destroy");
+  // <app dir>/compat-wl-track-versions (test aid): use the webOS 3 path even
+  // where libwayland has versioned proxies, to exercise it on a newer TV.
+  if (shim_app_file_exists("compat-wl-track-versions")) {
+    real_get_version = NULL;
+    real_ctor_versioned = NULL;
+  }
+  if (!real_get_version || !real_ctor_versioned)
+    fprintf(stderr, "[compat] libwayland < 1.10: proxy versions tracked by the shim\n");
+}
+#define SHIM_RESOLVE_VERSIONS() pthread_once(&g_ver_once, shim_resolve_versions)
+
+static pthread_mutex_t g_ver_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct shim_ver { struct wl_proxy *proxy; uint32_t version; } *g_vers;
+static size_t g_nvers, g_capvers;
+
+static void shim_ver_set(struct wl_proxy *proxy, uint32_t version) {
+  pthread_mutex_lock(&g_ver_lock);
+  size_t free_slot = g_nvers;
+  for (size_t i = 0; i < g_nvers; i++) {
+    if (g_vers[i].proxy == proxy) { g_vers[i].version = version; goto out; }
+    if (!g_vers[i].proxy && free_slot == g_nvers) free_slot = i;
+  }
+  if (free_slot == g_nvers) {
+    if (g_nvers == g_capvers) {
+      size_t cap = g_capvers ? g_capvers * 2 : 64;
+      struct shim_ver *v = realloc(g_vers, cap * sizeof(*v));
+      if (!v) goto out;
+      g_vers = v;
+      g_capvers = cap;
+    }
+    g_nvers++;
+  }
+  g_vers[free_slot].proxy = proxy;
+  g_vers[free_slot].version = version;
+out:
+  pthread_mutex_unlock(&g_ver_lock);
+}
+
+static uint32_t shim_ver_get(struct wl_proxy *proxy) {
+  uint32_t version = 0;
+  pthread_mutex_lock(&g_ver_lock);
+  for (size_t i = 0; i < g_nvers; i++)
+    if (g_vers[i].proxy == proxy) { version = g_vers[i].version; break; }
+  pthread_mutex_unlock(&g_ver_lock);
+  return version;
+}
+
+static void shim_ver_del(struct wl_proxy *proxy) {
+  pthread_mutex_lock(&g_ver_lock);
+  for (size_t i = 0; i < g_nvers; i++)
+    if (g_vers[i].proxy == proxy) { g_vers[i].proxy = NULL; break; }
+  pthread_mutex_unlock(&g_ver_lock);
+}
+
+__attribute__((visibility("default")))
+uint32_t wl_proxy_get_version(struct wl_proxy *proxy) {
+  SHIM_RESOLVE_VERSIONS();
+  if (real_get_version) return real_get_version(proxy);
+  return shim_ver_get(proxy);
+}
+
+__attribute__((visibility("default")))
+void wl_proxy_destroy(struct wl_proxy *proxy) {
+  SHIM_RESOLVE_VERSIONS();
+  if (!real_get_version) shim_ver_del(proxy);
+  real_proxy_destroy(proxy);
+}
+
+static struct wl_proxy *shim_marshal_constructor(struct wl_proxy *proxy, uint32_t opcode,
+                                                 union wl_argument *args,
+                                                 const struct wl_interface *interface,
+                                                 uint32_t version) {
+  SHIM_RESOLVE_VERSIONS();
+  if (real_ctor_versioned)
+    return real_ctor_versioned(proxy, opcode, args, interface, version);
+  struct wl_proxy *p = wl_proxy_marshal_array_constructor(proxy, opcode, args, interface);
+  if (p && !real_get_version) shim_ver_set(p, version);
+  return p;
+}
+
+// ---------------------------------------------------------------------------
 // Protocol-version clamping.
 // Clients built for webOS 26 bind some globals at versions older compositors
 // do not offer (e.g. wl_webos_shell v2 vs v1 on webOS 6), which is a fatal
 // protocol error. We wrap wl_registry listeners to record each global's
 // advertised version, then clamp wl_registry.bind requests to it.
 // ---------------------------------------------------------------------------
-#include <dlfcn.h>
 
 static int shim_app_file_exists(const char *name);
 #define SHIM_MAX_GLOBALS 256
@@ -721,8 +826,7 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
 
   struct wl_proxy *new_proxy = NULL;
   if (interface) {
-    new_proxy = wl_proxy_marshal_array_constructor_versioned(
-        proxy, opcode, args, interface, version);
+    new_proxy = shim_marshal_constructor(proxy, opcode, args, interface, version);
   } else {
     wl_proxy_marshal_array(proxy, opcode, args);
   }

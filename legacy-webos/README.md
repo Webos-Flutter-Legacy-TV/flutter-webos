@@ -177,8 +177,8 @@ real TVs are still needed. Result (inventory 0.10.0, Oct 2026):
 | 6 (6.4) | nothing | 16.3 | verified on 6.5.3 |
 | 5 (5.3.1) | nothing (`NDL_MediaSetPlayer` shimmed: single player) | 15.1 | likely works; Widevine proxy needs the v15 CDM interface |
 | 4 (4.4.2, 4.10) | nothing with `COMPAT_WEBOS4=1` (see below); without it `libsystemd.so.0`, `libcurl.so.4` and the `wl_webos_foreign` protocol | -, 14.0 | starts on paper; no video placement; untested on a TV |
-| 3 (3.4, 3.9) | as webOS 4, plus older Luna C++, i18n and pbnjson APIs, no libudev/libwebp | - | much more work |
-| 1-2 | as webOS 3, plus no Luna C++ library | - | highest risk |
+| 3 (3.4, 3.9) | nothing with `COMPAT_WEBOS3=1` (see below); without it as webOS 4, plus older Luna C++, i18n and pbnjson APIs, Wayland < 1.10, no `libudev.so.1`/libwebp | - | starts on paper; no video placement; untested on a TV |
+| 1-2 | with `COMPAT_WEBOS3=1` still: Wayland `wl_display_prepare_read`/`cancel_read`, glib `g_unix_fd_source_new`, newer Luna calls; 1.x also older Luna and PmLog APIs | - | highest risk |
 
 ```sh
 tools/fw-compat-check.py --db <fw-symbols data dir> build/webos/arm/release/bundle/lib/*.so
@@ -187,7 +187,9 @@ tools/fw-compat-check.py --db <fw-symbols data dir> build/webos/arm/release/bund
 `--require LO[:HI]` turns the report into a test: exit 1 unless every image
 with a release from LO up to (not including) HI passes. CI builds every test
 app and requires webOS 5 and newer for normal packages, 4.4 to 6 for
-`COMPAT_WEBOS4=1` ones.
+`COMPAT_WEBOS4=1` ones and 3 to 6 for `COMPAT_WEBOS3=1` ones. Pass the
+bundled libraries from `lib/compat` too (not glibc or the C++ runtime): what
+they export counts as available, and their own imports are checked.
 
 ### webOS 4 (opt-in, untested on a TV)
 
@@ -219,6 +221,34 @@ without the switch. Video placement cannot work on webOS 4 this way (no
 exported windows); the rest of the app should. Bundled `libsystemd` (systemd
 257) on a webOS 4 kernel is the main unknown until someone runs it on a TV.
 
+### webOS 3 (opt-in, untested on a TV)
+
+`COMPAT_WEBOS3=1` includes everything `COMPAT_WEBOS4=1` adds, plus:
+
+| Added to `lib/compat/` | Why |
+| --- | --- |
+| `libluna-service2++.so.3` | Built from webOS OSE's luna-service2 (Apache-2.0, `compat/webos3/luna-service2pp`). webOS 3's copy has an older `LS::Call` (inline constructor and destructor, another reply context), which LG's embedder cannot use; OSE's matches LG's (checked in the embedder's machine code). No firmware library the app loads on webOS 3 uses this library |
+| `libwebos3-compat.so` | `compat/webos3/webos3_compat.cpp`, a direct dependency of the app binary: `ResBundle` with the C++11 string ABI (accessibility labels stay untranslated), `LSErrorLogDefault`, `LSMessageIsConnected`, pbnjson's `JValue::asString` and `JGenerator::toString` (media plugins), `sqlite3_db_cacheflush`, `sqlite3_expanded_sql`, and the `wl_webos_xinput` protocol descriptions. Each forwards to the firmware's function where there is one |
+| `libudev.so.1` | `compat/webos3/udev_compat.c`, only for the gamepads plugin: forwards to the firmware's `libudev.so.0` (webOS 3) or `libudev.so.1` (webOS 4+) |
+| `libwebp.so.7`, `libwebpdemux.so.2`, `libsharpyuv.so.0` | Debian's (BSD-3-Clause, fetched by `setup.sh`), only for webos_image_texture |
+
+The Wayland shim also covers libwayland older than 1.10 (webOS 3): it creates
+proxies with the unversioned constructor and answers `wl_proxy_get_version`
+from versions it records (the bind version after clamping, the parent's for
+child objects). The switch file `compat-wl-track-versions` forces this path
+on a newer TV, for testing.
+
+```sh
+COMPAT_WEBOS3=1 flutter-webos build webos --release --legacy
+tools/fw-compat-check.py --db <data dir> --webos3 <stage>/<main> <stage>/lib/*.so <stage>/lib/compat/libwebos3-compat.so ...
+```
+
+The firmware check passes for webOS 3.4, 3.9, 4.4, 4.10, 5.3 and 6.4, for
+every test app (CI). The package suits webOS 3-6 only (as `COMPAT_WEBOS4=1`).
+Like webOS 4, there is no video placement. Unknowns until it runs on a TV:
+the 3.x kernels and GPU drivers, and whether webOS 3's compositor accepts
+the shell and input protocols LG's embedder uses.
+
 ## Tools
 
 The TV tools use SSH as root (rooted TV). Set `TV_HOST`, and `TV_SSH_KEY` if
@@ -227,7 +257,7 @@ the key is not `~/.ssh/lg_webos`.
 | Tool | Purpose |
 | --- | --- |
 | `tools/make-compat-ipk.sh <app> [mode]` | Repackage a flutter-webos build for older webOS |
-| `tools/check-compat-ipk.py [--webos4] <ipk>` | Check a legacy IPK's structure: loader, `DT_RPATH`, shims as direct dependencies, preload patch, webOS 4 extras (run by the packager on every build) |
+| `tools/check-compat-ipk.py [--webos4] [--webos3] <ipk>` | Check a legacy IPK's structure: loader, `DT_RPATH`, shims as direct dependencies, preload patch, webOS 4 and webOS 3 extras (run by the packager on every build) |
 | `tools/fw-compat-check.py` | Check a build against firmware symbol data per webOS release (see above) |
 | `tools/build-shims.sh` | Build the shims and `tv-key` (called by the packager) |
 | `tools/dev-cycle.sh <app> [secs] [--luna]` | Package, install, run, print `compat.log` |
@@ -293,15 +323,18 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
   `DeviceInfoPlugin().deviceInfo` casts to `LinuxDeviceInfo` and throws.
 - `PlatformDispatcher.displays.first.refreshRate` reports 16666 (the embedder
   passes the frame period in microseconds).
-- Only webOS 6.5.3 has been tested. webOS 4 support (`COMPAT_WEBOS4=1`) is
-  checked only against firmware symbol data. Releases older than webOS 4 need
-  more work (older Luna, i18n and Wayland APIs; older kernels and GPU drivers).
+- Only webOS 6.5.3 has been tested. webOS 4 and webOS 3 support
+  (`COMPAT_WEBOS4=1`, `COMPAT_WEBOS3=1`) is checked only against firmware
+  symbol data. webOS 1 and 2 need more work (older Wayland, glib and Luna
+  APIs; older kernels and GPU drivers).
 
 ## Licensing
 
 The bundled glibc (LGPL, from Debian), with `COMPAT_WEBOS4=1` also libsystemd
 (LGPL-2.1, from Debian), libopus (BSD-3-Clause, from Debian) and protocol code generated from webOS OSE (Apache-2.0,
-see `compat/webos4/NOTICE`), and the C++ runtime (GPL with the runtime
+see `compat/webos4/NOTICE`), with `COMPAT_WEBOS3=1` also luna-service2++
+built from webOS OSE (Apache-2.0) and libwebp (BSD-3-Clause; see
+`compat/webos3/NOTICE`), and the C++ runtime (GPL with the runtime
 exception, from LG's NDK build of GCC) are open source; ship their licences
 and offer the matching sources. LG's engine, embedder and NDK stay under LG's terms;
 check those before distributing repackaged apps outside Developer Mode.

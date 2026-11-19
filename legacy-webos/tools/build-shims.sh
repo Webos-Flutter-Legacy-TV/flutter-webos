@@ -4,6 +4,7 @@
 set -euo pipefail
 FW="$(cd "$(dirname "$0")/.." && pwd)"
 CC="$FW/toolchains/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot/bin/arm-webos-linux-gnueabi-gcc"
+WB_SYSROOT="$FW/toolchains/webosbrew/arm-webos-linux-gnueabi_sdk-buildroot/arm-webos-linux-gnueabi/sysroot"
 [ -x "$CC" ] || { echo "webosbrew toolchain missing; run ./setup.sh" >&2; exit 1; }
 mkdir -p "$FW/compat/wayland-shim/out" "$FW/compat/ndl-sdl-shim/out"
 "$CC" -O2 -fPIC -shared -Wall -Wextra \
@@ -29,6 +30,10 @@ mkdir -p "$FW/compat/webos4/out"
 "$CC" -O2 -fPIC -shared -Wall -Wextra -fvisibility=hidden -Wl,-soname,libwebos-foreign-compat.so \
   -o "$FW/compat/webos4/out/libwebos-foreign-compat.so" \
   "$FW/compat/webos4/wl_webos_foreign_protocol.c" -lwayland-client
+# webOS 3: libudev.so.1 stand-in (forwards to libudev.so.0 or the firmware's .so.1).
+mkdir -p "$FW/compat/webos3/out"
+"$CC" -O2 -fPIC -shared -Wall -Wextra -fvisibility=hidden -Wl,-soname,libudev.so.1 \
+  -o "$FW/compat/webos3/out/libudev.so.1" "$FW/compat/webos3/udev_compat.c" -ldl -lpthread
 "$CC" -O2 -Wall -o "$FW/tools/tv-key/tv-key" "$FW/tools/tv-key/tv-key.c"
 
 # Widevine CDM proxy (C++, needs the NDK's g++ for the CDM's libstdc++ ABI).
@@ -43,4 +48,36 @@ if [ -e "$NDK_ENV" ]; then
       "$FW/compat/widevine/wv_cdm.cpp" -ldl -lpthread
     $CXX -std=c++17 -O2 -Wall -Wextra -o "$FW/compat/widevine/out/wv-selftest" \
       "$FW/compat/widevine/wv_selftest.cpp" "$FW/compat/widevine/wv_cdm.cpp" -ldl -lpthread )
+
+  # webOS 3 (COMPAT_WEBOS3=1): see compat/webos3/NOTICE. C++ with the NDK's g++
+  # so std::string and LS::Call match LG's binaries.
+  W3="$FW/compat/webos3"
+  LS2="$W3/luna-service2pp"
+  mkdir -p "$W3/out/obj" "$W3/out/link"
+  # shellcheck source=/dev/null
+  ( . "$NDK_ENV" >/dev/null 2>&1
+    # libwebos3-compat.so: functions webOS 3's firmware lacks. wayland-util.h
+    # (plain structs) comes from the webosbrew sysroot; the NDK has none.
+    $CC -O2 -fPIC -Wall -Wextra -idirafter "$WB_SYSROOT/usr/include" \
+      -c -o "$W3/out/obj/xinput.o" "$W3/wl_webos_xinput_protocol.c"
+    $CXX -std=c++17 -O2 -fPIC -Wall -Wextra -fvisibility=hidden -fvisibility-inlines-hidden \
+      -c -o "$W3/out/obj/webos3_compat.o" "$W3/webos3_compat.cpp"
+    $CXX -shared -Wl,-soname,libwebos3-compat.so -o "$W3/out/libwebos3-compat.so" \
+      "$W3/out/obj/webos3_compat.o" "$W3/out/obj/xinput.o" -ldl
+    # libluna-service2++.so.3 from webOS OSE sources, linked against the
+    # firmware's C libluna-service2 (empty stand-in with its SONAME, not shipped).
+    $CC -shared -nostdlib -Wl,-soname,libluna-service2.so.3 \
+      -o "$W3/out/link/libluna-service2.so.3" -x c /dev/null
+    LS2_FLAGS=(-std=c++14 -fPIC -Wall -DUSE_PMLOG_DECLARATION -I"$LS2/include/private"
+               -I"$LS2/include/public" -I"$LS2/include/public/luna-service2++")
+    read -r -a GLIB_CFLAGS <<<"$(pkg-config --cflags glib-2.0)"
+    read -r -a GLIB_LIBS <<<"$(pkg-config --libs glib-2.0)"
+    for src in call subscription condition_variable; do
+      $CXX "${LS2_FLAGS[@]}" "${GLIB_CFLAGS[@]}" -O2 -c -o "$W3/out/obj/$src.o" "$LS2/src/$src.cpp"
+    done
+    $CXX "${LS2_FLAGS[@]}" "${GLIB_CFLAGS[@]}" -O0 -c -o "$W3/out/obj/call_export.o" "$LS2/src/call_export.cpp"
+    $CXX -shared -Wl,-soname,libluna-service2++.so.3 -Wl,--no-as-needed \
+      -o "$W3/out/libluna-service2++.so.3" \
+      "$W3/out/obj/call.o" "$W3/out/obj/subscription.o" "$W3/out/obj/condition_variable.o" \
+      "$W3/out/obj/call_export.o" "$W3/out/link/libluna-service2.so.3" -lPmLogLib "${GLIB_LIBS[@]}" )
 fi

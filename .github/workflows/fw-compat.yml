@@ -1,12 +1,14 @@
-# Builds every legacy-webos test app (normal and COMPAT_WEBOS4=1 packages)
+# Builds every legacy-webos test app (normal, COMPAT_WEBOS4=1 and
+# COMPAT_WEBOS3=1 packages)
 # and checks them against webosbrew's firmware symbol data, so a change that
 # would stop an app loading on some webOS release fails here, not on a TV.
 #
 #   - normal packages: every firmware image from webOS 5 on must pass
 #   - COMPAT_WEBOS4=1: webOS 4.4 up to (not including) webOS 7 must pass
+#   - COMPAT_WEBOS3=1: webOS 3 up to (not including) webOS 7 must pass
 #
 # make-compat-ipk.sh also runs tools/check-compat-ipk.py on each package
-# (loader, DT_RPATH, NEEDED shims, preload patch, webOS 4 extras).
+# (loader, DT_RPATH, NEEDED shims, preload patch, webOS 4 and 3 extras).
 #
 # Accepts the LG SDK License Agreement for the webOS NDK
 # (WEBOS_NDK_ACCEPT_EULA=1), as docs-setup.yml does. No TV is involved.
@@ -76,23 +78,30 @@ jobs:
           status=0
           for app in tests/*/; do
             name=$(basename "$app")
-            for webos4 in 0 1; do
-              echo "::group::$name (COMPAT_WEBOS4=$webos4)"
+            for mode in normal webos4 webos3; do
+              echo "::group::$name ($mode)"
               (
                 set -e
                 cd "$app"
-                COMPAT_WEBOS4=$webos4 flutter-webos build webos --release --legacy
+                case $mode in
+                  normal) env=(); check=(--require 5) ;;
+                  webos4) env=(COMPAT_WEBOS4=1); check=(--webos4 --require 4.4:7) ;;
+                  webos3) env=(COMPAT_WEBOS3=1); check=(--webos3 --require 3:7) ;;
+                esac
+                env "${env[@]}" flutter-webos build webos --release --legacy
                 stage=$(echo build/webos-compat/release/stage/*)
                 elfs=("$stage/$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["main"])' "$stage/appinfo.json")" "$stage"/lib/*.so)
-                if [ "$webos4" = 1 ]; then
-                  for f in libsystemd.so.0 libopus.so.0; do
-                    [ -e "$stage/lib/compat/$f" ] && elfs+=("$stage/lib/compat/$f")
-                  done
-                  python3 "$OLDPWD/tools/fw-compat-check.py" --db "$FW_DB" --webos4 --require 4.4:7 "${elfs[@]}"
-                else
-                  python3 "$OLDPWD/tools/fw-compat-check.py" --db "$FW_DB" --require 5 "${elfs[@]}"
-                fi
-              ) || { echo "::error::$name (COMPAT_WEBOS4=$webos4) failed"; status=1; }
+                # Also check the bundled compat libraries' own imports (not
+                # glibc or the C++ runtime, which the inventory cannot judge).
+                for f in "$stage"/lib/compat/*; do
+                  case $(basename "$f") in
+                    ld-linux.so.3|libc.so.6|libm.so.6|libpthread.so.0|libdl.so.2|librt.so.1|libresolv.so.2|\
+                    libutil.so.1|libanl.so.1|libnss_*|libstdc++.so.6|libgcc_s.so.1|libatomic.so.1) ;;
+                    *) elfs+=("$f") ;;
+                  esac
+                done
+                python3 "$OLDPWD/tools/fw-compat-check.py" --db "$FW_DB" "${check[@]}" "${elfs[@]}"
+              ) || { echo "::error::$name ($mode) failed"; status=1; }
               echo "::endgroup::"
             done
           done

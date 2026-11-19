@@ -42,7 +42,9 @@ Without the flag, the same step can be run on an existing build:
 
 For a **webOS 4** TV (untested on real hardware), package with
 `COMPAT_WEBOS4=1 flutter-webos build webos --release --legacy`. That package
-is for webOS 4-6 only; see the README section "webOS 4".
+is for webOS 4-6 only; see the README section "webOS 4". For **webOS 3**
+(also untested), use `COMPAT_WEBOS3=1` instead (webOS 3-6; README section
+"webOS 3").
 
 ## 3. Configure
 

@@ -9,9 +9,10 @@ successful build proves:
   - the shims and bundled glibc pieces are direct NEEDED entries,
   - every bundled library the package needs is in it,
   - the bundled loader skips /etc/ld.so.preload,
-  - the webOS 4 extras are there exactly when built with COMPAT_WEBOS4=1.
+  - the webOS 4 extras are there exactly when built with COMPAT_WEBOS4=1,
+  - the webOS 3 extras are there exactly when built with COMPAT_WEBOS3=1.
 
-Usage: tools/check-compat-ipk.py [--webos4] <app.ipk>
+Usage: tools/check-compat-ipk.py [--webos4 [--webos3]] <app.ipk>
 Exit status 1 with a list of problems if any check fails.
 """
 import argparse
@@ -31,6 +32,8 @@ EXE_NEEDED = ["libwl-marshal-flags-shim.so", "libpthread.so.0", "libdl.so.2", "l
 EXE_RPATH = "$ORIGIN/lib/compat:$ORIGIN/lib:$ORIGIN"
 LIB_RPATH = "$ORIGIN/compat:$ORIGIN"
 WEBOS4_ONLY = ["libsystemd.so.0", "libopus.so.0", "libcurl.so.4", "libwebos-foreign-compat.so"]
+WEBOS3_ONLY = ["libwebos3-compat.so", "libluna-service2++.so.3", "libudev.so.1", "libwebp.so.7",
+               "libwebpdemux.so.2", "libsharpyuv.so.0"]
 INSTALL_ROOT = "/media/developer/apps/usr/palm/applications"
 
 DT_NEEDED, DT_STRTAB, DT_RPATH, DT_RUNPATH = 1, 5, 15, 29
@@ -105,8 +108,12 @@ def read_ipk(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--webos4", action="store_true", help="the package was built with COMPAT_WEBOS4=1")
+    ap.add_argument("--webos3", action="store_true",
+                    help="the package was built with COMPAT_WEBOS3=1 (implies --webos4)")
     ap.add_argument("ipk")
     args = ap.parse_args()
+    if args.webos3:
+        args.webos4 = True
 
     files = read_ipk(args.ipk)
     info_path = next((p for p in files if p.endswith("/appinfo.json")
@@ -210,10 +217,28 @@ def main():
             elif exe and "libwebos-foreign-compat.so" not in exe.needed:
                 bad(f"{main_rel}: libwebos-foreign-compat.so not a direct NEEDED entry")
 
+    # webOS 3 extras: present exactly with --webos3.
+    present3 = [f for f in WEBOS3_ONLY if f in compat]
+    if not args.webos3:
+        for f in present3:
+            bad(f"lib/compat/{f} is in a package built without COMPAT_WEBOS3=1 "
+                "(it would replace the firmware's library on webOS 4+)")
+    else:
+        if "libwebos3-compat.so" not in compat:
+            bad("COMPAT_WEBOS3: lib/compat/libwebos3-compat.so missing")
+        elif exe and "libwebos3-compat.so" not in exe.needed:
+            bad(f"{main_rel}: libwebos3-compat.so not a direct NEEDED entry")
+        for so in ("libluna-service2++.so.3", "libudev.so.1", "libwebp.so.7", "libwebpdemux.so.2"):
+            if needs(so) and so not in compat:
+                bad(f"COMPAT_WEBOS3: {so} is used but not bundled")
+        if "libwebp.so.7" in compat and "libsharpyuv.so.0" not in compat:
+            bad("COMPAT_WEBOS3: libwebp.so.7 is bundled without libsharpyuv.so.0")
+
     # Every bundled library a bundled ELF names must be present: a name that is
     # in lib/compat for one ELF but missing for another is a packaging slip.
     for n in sorted({n for e in everything for n in e.needed}):
-        bundled_name = n in ALWAYS or n in ("libSDL2-2.0.so.0", "libwebos-foreign-compat.so", "libwv-compat.so")
+        bundled_name = n in ALWAYS or n in ("libSDL2-2.0.so.0", "libwebos-foreign-compat.so", "libwv-compat.so",
+                                            "libwebos3-compat.so")
         if bundled_name and n not in compat and n not in libs:
             bad(f"{n} is needed but not bundled")
 
@@ -229,7 +254,8 @@ def main():
             print(f"  - {p}", file=sys.stderr)
         sys.exit(1)
     print(f"check-compat-ipk: {name}: OK ({len(compat)} bundled libraries"
-          f"{', webOS 4 extras: ' + ', '.join(present4) if present4 else ''})", file=sys.stderr)
+          f"{', webOS 4 extras: ' + ', '.join(present4) if present4 else ''}"
+          f"{', webOS 3 extras: ' + ', '.join(present3) if present3 else ''})", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,21 @@ tag on both.
 
 ## Unreleased
 
+- webOS 3 (opt-in `COMPAT_WEBOS3=1`, untested on a TV): adds to the webOS 4
+  extras a `libluna-service2++` built from webOS OSE (LG's embedder needs the
+  newer `LS::Call`), `libwebos3-compat` (ResBundle with the C++11 string ABI,
+  two Luna, two pbnjson and two SQLite functions, the `wl_webos_xinput`
+  protocol), a `libudev.so.1` stand-in and Debian's libwebp where plugins use
+  them. The firmware check passes for webOS 3.4 to 6.4 for every test app.
+- Wayland shim: works with libwayland < 1.10 (webOS 3), which has no
+  `wl_proxy_get_version` or versioned constructor; it records proxy versions
+  itself there. Found because the firmware check now also checks the bundled
+  libraries. Unchanged behaviour on webOS 4+ (normal compat_test on 6.5.3).
+- `fw-compat-check.py`: `--webos3`; symbols exported by any ELF given count as
+  available, so passing `lib/compat` libraries checks their imports too (CI
+  does). `check-compat-ipk.py`: `--webos3`.
+- video_player, video_player_drm (plugins a6310ed): the video widget state is
+  disposed (it kept a post-frame callback and move timer after layout changes).
 - webOS 4 (opt-in `COMPAT_WEBOS4=1`, untested on a TV): bundles Debian's
   libsystemd, a `libcurl.so.4` forwarder to the firmware's `libcurl.so.5`,
   and the `wl_webos_foreign` protocol descriptions; the firmware check passes

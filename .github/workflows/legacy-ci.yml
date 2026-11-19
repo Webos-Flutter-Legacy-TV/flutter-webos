@@ -68,6 +68,7 @@ jobs:
                    compat/wayland-egl-forward/out/libwayland-egl.so.1 \
                    compat/fallback/out/libcurl.so.4 \
                    compat/webos4/out/libwebos-foreign-compat.so \
+                   compat/webos3/out/libudev.so.1 \
                    tools/tv-key/tv-key; do
             test -s "$f" || { echo "missing $f"; exit 1; }
             file "$f"

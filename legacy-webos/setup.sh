@@ -18,7 +18,9 @@ DEBIAN_MIRROR="https://deb.debian.org/debian"
 DEBIAN_SUITE=trixie
 # libsystemd0: fallback for webOS 4, whose firmware has no libsystemd.so.0
 # (LG's media library uses its sd_event loop). Needs only glibc and libcap2.
-DEBIAN_PACKAGES="libc6 libsystemd0 libopus0"
+# libwebp7, libwebpdemux2, libsharpyuv0: for webOS 3 (COMPAT_WEBOS3=1), whose
+# firmware has no libwebp.so.7 (webos_image_texture). Need only glibc.
+DEBIAN_PACKAGES="libc6 libsystemd0 libopus0 libwebp7 libwebpdemux2 libsharpyuv0"
 
 step() { printf '\n== %s\n' "$*"; }
 

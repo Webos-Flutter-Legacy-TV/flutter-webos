@@ -15,7 +15,12 @@ Libraries legacy-webos bundles (glibc, the C++ runtime) and symbols its shims
 provide are excluded. The inventory proves a symbol exists; it says nothing
 about symbol versions, kernel versions or protocol versions.
 
-  fw-compat-check.py --db <data dir> [--webos4] [--require LO[:HI]] <elf>...
+  fw-compat-check.py --db <data dir> [--webos4 | --webos3] [--require LO[:HI]] <elf>...
+
+Symbols exported by any ELF given are treated as available to all of them
+(they are all in the package). So pass the bundled compat libraries from
+lib/compat too (not glibc or the C++ runtime): their own imports are then
+checked as well, and what they provide is not reported as missing.
 
 --require makes this a test (used by CI): exit 1 if any firmware with a
 release in [LO, HI) has a missing library or symbol, e.g. --require 5 for the
@@ -23,6 +28,10 @@ normal package, --require 4.4:7 with --webos4.
 
 --webos4 checks a package built with COMPAT_WEBOS4=1. Pass the bundled
 libsystemd.so.0 and libopus.so.0 as ELFs to check their own dependencies too.
+
+--webos3 checks a package built with COMPAT_WEBOS3=1 (includes --webos4):
+libluna-service2++.so.3 and libwebos3-compat.so are bundled, and where plugins
+use them the libudev.so.1 stand-in and Debian's libwebp.
 """
 import argparse
 import json
@@ -46,6 +55,8 @@ SHIMMED = {"wl_proxy_marshal_flags", "WebPMalloc", "NDL_MediaInitWithWindowId",
 # libcurl.so.4 is a forwarder to the firmware's libcurl.so.5
 WEBOS4_BUNDLED = {"libsystemd.so.0", "libopus.so.0"}
 WEBOS4_ALTERNATIVES = {"libcurl.so.4": ["libcurl.so.4", "libcurl.so.5"]}
+WEBOS3_BUNDLED = {"libluna-service2++.so.3", "libwebos3-compat.so", "libudev.so.1", "libwebp.so.7",
+                  "libwebpdemux.so.2", "libsharpyuv.so.0"}
 WEBOS4_SHIMMED = {"wl_webos_foreign_interface", "wl_webos_exported_interface",
                   "wl_webos_imported_interface"}
 IGNORE_SYM = re.compile(r"^(_ITM_|__gmon_start__|_Jv_|__cxa_|__gxx_personality|_Unwind_|__aeabi_|"
@@ -69,6 +80,17 @@ def elf_info(path):
             if name and not IGNORE_SYM.search(name):
                 undef.add(name)
     return needed, undef
+
+
+def elf_exports(path):
+    """Functions and data an ELF defines for others (dynamic symbols, not UND)."""
+    syms = subprocess.run(["readelf", "--dyn-syms", "-W", path], capture_output=True, text=True).stdout
+    out = set()
+    for line in syms.splitlines():
+        f = line.split()
+        if len(f) >= 8 and f[6] != "UND" and f[4] in ("GLOBAL", "WEAK") and f[3] in ("FUNC", "OBJECT", "IFUNC"):
+            out.add(f[7].split("@", 1)[0])
+    return out
 
 
 class Firmware:
@@ -129,6 +151,8 @@ def main():
     ap.add_argument("--db", required=True, help="fw-symbols data directory")
     ap.add_argument("--webos4", action="store_true",
                     help="package built with COMPAT_WEBOS4=1 (bundled libsystemd and libopus, libcurl.so.4 forwarder)")
+    ap.add_argument("--webos3", action="store_true",
+                    help="package built with COMPAT_WEBOS3=1 (also bundles luna-service2++ and libwebos3-compat)")
     ap.add_argument("--require", metavar="LO[:HI]",
                     help="exit 1 unless every firmware with LO <= release < HI passes")
     ap.add_argument("elf", nargs="+")
@@ -137,17 +161,23 @@ def main():
     if args.require:
         a, _, b = args.require.partition(":")
         lo, hi = release_key(a), release_key(b) if b else None
+    if args.webos3:
+        args.webos4 = True
     if args.webos4:
         ALTERNATIVES.update(WEBOS4_ALTERNATIVES)
 
+    provided = set()
+    for p in args.elf:
+        provided |= elf_exports(p)
     elfs = {}
     for p in args.elf:
         needed, undef = elf_info(p)
         needed = [n for n in needed if not BUNDLED.match(n)
-                  and not (args.webos4 and n in WEBOS4_BUNDLED)]
+                  and not (args.webos4 and n in WEBOS4_BUNDLED)
+                  and not (args.webos3 and n in WEBOS3_BUNDLED)]
         if args.webos4:
             undef = {u for u in undef if not u.startswith(("sd_", "opus_"))} - WEBOS4_SHIMMED
-        elfs[os.path.basename(p)] = (needed, undef - SHIMMED)
+        elfs[os.path.basename(p)] = (needed, undef - SHIMMED - provided)
 
     fws = []
     for d in os.listdir(args.db):
