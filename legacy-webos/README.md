@@ -178,7 +178,8 @@ real TVs are still needed. Result (inventory 0.10.0, Oct 2026):
 | 5 (5.3.1) | nothing (`NDL_MediaSetPlayer` shimmed: single player) | 15.1 | likely works; Widevine proxy needs the v15 CDM interface |
 | 4 (4.4.2, 4.10) | nothing with `COMPAT_WEBOS4=1` (see below); without it `libsystemd.so.0`, `libcurl.so.4` and the `wl_webos_foreign` protocol | -, 14.0 | starts on paper; no video placement; untested on a TV |
 | 3 (3.4, 3.9) | nothing with `COMPAT_WEBOS3=1` (see below); without it as webOS 4, plus older Luna C++, i18n and pbnjson APIs, Wayland < 1.10, no `libudev.so.1`/libwebp | - | starts on paper; no video placement; untested on a TV |
-| 1-2 | with `COMPAT_WEBOS3=1` still: Wayland `wl_display_prepare_read`/`cancel_read`, glib `g_unix_fd_source_new`, newer Luna calls; 1.x also older Luna and PmLog APIs | - | highest risk |
+| 2 (2.2) | with `COMPAT_WEBOS3=1`: nothing for apps without media plugins; media and image plugins need four newer pbnjson C++ functions | - | core app starts on paper; untested on a TV |
+| 1 (1.2, 1.4) | with `COMPAT_WEBOS3=1` also older Luna, PmLog and Wayland APIs and more webOS protocols | - | highest risk |
 
 ```sh
 tools/fw-compat-check.py --db <fw-symbols data dir> build/webos/arm/release/bundle/lib/*.so
@@ -235,7 +236,14 @@ exported windows); the rest of the app should. Bundled `libsystemd` (systemd
 The Wayland shim also covers libwayland older than 1.10 (webOS 3): it creates
 proxies with the unversioned constructor and answers `wl_proxy_get_version`
 from versions it records (the bind version after clamping, the parent's for
-child objects). The switch file `compat-wl-track-versions` forces this path
+child objects). For libwayland older than 1.4 (webOS 2), which has no array
+marshalling, it creates objects with `wl_proxy_create` and sends requests
+through the varargs `wl_proxy_marshal` (every argument is one 32-bit word on
+ARM32); for libwayland older than 1.2 it emulates the threaded read API LG's
+embedder uses (`prepare_read` always succeeds, `read_events` runs
+`wl_display_dispatch` after `poll` reported data). `libwebos3-compat` also
+provides `LSRegisterApplicationService` (falls back to `LSRegister`) and
+`g_unix_fd_source_new` (glib 2.34 on webOS 2). The switch file `compat-wl-track-versions` forces this path
 on a newer TV, for testing.
 
 ```sh
@@ -244,7 +252,9 @@ tools/fw-compat-check.py --db <data dir> --webos3 <stage>/<main> <stage>/lib/*.s
 ```
 
 The firmware check passes for webOS 3.4, 3.9, 4.4, 4.10, 5.3 and 6.4, for
-every test app (CI). The package suits webOS 3-6 only (as `COMPAT_WEBOS4=1`).
+every test app, and for webOS 2.2 for the apps without media or image
+plugins (compat_test, input_test) (CI). The package suits webOS 2-6 only (as
+`COMPAT_WEBOS4=1`, not webOS 7+).
 Like webOS 4, there is no video placement. Unknowns until it runs on a TV:
 the 3.x kernels and GPU drivers, and whether webOS 3's compositor accepts
 the shell and input protocols LG's embedder uses.

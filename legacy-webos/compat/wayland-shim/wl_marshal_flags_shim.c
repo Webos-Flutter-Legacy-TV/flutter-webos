@@ -147,14 +147,64 @@ void wl_proxy_destroy(struct wl_proxy *proxy) {
   real_proxy_destroy(proxy);
 }
 
+// libwayland < 1.4 (webOS 2.x) has no *_array_* marshalling at all, only
+// wl_proxy_create() and the varargs wl_proxy_marshal(). On ARM32 every
+// request argument (int, uint, fixed, fd, string, object, new_id, array) is
+// one 32-bit word passed the same way through varargs, so the argument array
+// can be spread into a call with SHIM_MAX_ARGS words; libwayland reads only as
+// many as the signature has. New objects are created first with
+// wl_proxy_create() and passed as the new_id argument, as pre-1.4 generated
+// code did.
+_Static_assert(sizeof(union wl_argument) == 4 && sizeof(void *) == 4,
+               "the varargs fallback assumes 32-bit Wayland arguments");
+static void (*real_marshal_array)(struct wl_proxy *, uint32_t, union wl_argument *);
+static struct wl_proxy *(*real_marshal_array_ctor)(struct wl_proxy *, uint32_t, union wl_argument *,
+                                                   const struct wl_interface *);
+static pthread_once_t g_marshal_once = PTHREAD_ONCE_INIT;
+static void shim_resolve_marshal(void) {
+  real_marshal_array = (void (*)(struct wl_proxy *, uint32_t, union wl_argument *))
+      dlsym(RTLD_NEXT, "wl_proxy_marshal_array");
+  real_marshal_array_ctor = (struct wl_proxy *(*)(struct wl_proxy *, uint32_t, union wl_argument *,
+                                                  const struct wl_interface *))
+      dlsym(RTLD_NEXT, "wl_proxy_marshal_array_constructor");
+  if (!real_marshal_array || !real_marshal_array_ctor)
+    fprintf(stderr, "[compat] libwayland < 1.4: requests marshalled through wl_proxy_marshal()\n");
+}
+
+static void shim_marshal_varargs(struct wl_proxy *proxy, uint32_t opcode, const union wl_argument *args) {
+  uint32_t w[SHIM_MAX_ARGS];
+  memcpy(w, args, sizeof(w));
+  wl_proxy_marshal(proxy, opcode, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9],
+                   w[10], w[11], w[12], w[13], w[14], w[15], w[16], w[17], w[18], w[19]);
+}
+
+static void shim_marshal(struct wl_proxy *proxy, uint32_t opcode, union wl_argument *args) {
+  pthread_once(&g_marshal_once, shim_resolve_marshal);
+  if (real_marshal_array)
+    real_marshal_array(proxy, opcode, args);
+  else
+    shim_marshal_varargs(proxy, opcode, args);
+}
+
+// new_id_index: position of the new_id argument in args (-1 if none found).
 static struct wl_proxy *shim_marshal_constructor(struct wl_proxy *proxy, uint32_t opcode,
                                                  union wl_argument *args,
                                                  const struct wl_interface *interface,
-                                                 uint32_t version) {
+                                                 uint32_t version, int new_id_index) {
   SHIM_RESOLVE_VERSIONS();
   if (real_ctor_versioned)
     return real_ctor_versioned(proxy, opcode, args, interface, version);
-  struct wl_proxy *p = wl_proxy_marshal_array_constructor(proxy, opcode, args, interface);
+  pthread_once(&g_marshal_once, shim_resolve_marshal);
+  struct wl_proxy *p;
+  if (real_marshal_array_ctor) {
+    p = real_marshal_array_ctor(proxy, opcode, args, interface);
+  } else {
+    if (new_id_index < 0) return NULL;
+    p = wl_proxy_create(proxy, interface);
+    if (!p) return NULL;
+    args[new_id_index].o = (struct wl_object *)p;
+    shim_marshal_varargs(proxy, opcode, args);
+  }
   if (p && !real_get_version) shim_ver_set(p, version);
   return p;
 }
@@ -521,6 +571,7 @@ int poll(struct pollfd *fds, nfds_t n, int timeout) {
   __attribute__((visibility("default"))) ret name params {                    \
     static ret(*real) params;                                                 \
     if (!real) real = dlsym(RTLD_NEXT, #name);                                \
+    if (!real) return -1; /* not in this libwayland (see below) */           \
     if (!wait_on()) return real args;                                         \
     double t = now_ms();                                                      \
     ret r = real args;                                                        \
@@ -533,7 +584,48 @@ TIMED_WL(int, wl_display_dispatch, (struct wl_display *d), (d))
 TIMED_WL(int, wl_display_dispatch_queue, (struct wl_display *d, struct wl_event_queue *q), (d, q))
 TIMED_WL(int, wl_display_roundtrip, (struct wl_display *d), (d))
 TIMED_WL(int, wl_display_roundtrip_queue, (struct wl_display *d, struct wl_event_queue *q), (d, q))
-TIMED_WL(int, wl_display_read_events, (struct wl_display *d), (d))
+
+// Threaded event reading (libwayland >= 1.2). LG's embedder runs the usual
+// loop: prepare_read / dispatch_pending, flush, poll(timeout 0), then
+// read_events + dispatch_pending or cancel_read. Older libwayland (webOS 2.x)
+// has none of the three; there, prepare_read always succeeds, cancel_read
+// does nothing and read_events lets wl_display_dispatch() read and dispatch,
+// which does not block because poll() just reported data. Where libwayland
+// has them, these forward to it.
+static int (*real_prepare_read)(struct wl_display *);
+static void (*real_cancel_read)(struct wl_display *);
+static int (*real_read_events)(struct wl_display *);
+static pthread_once_t g_read_once = PTHREAD_ONCE_INIT;
+static void shim_resolve_read(void) {
+  real_prepare_read = (int (*)(struct wl_display *))dlsym(RTLD_NEXT, "wl_display_prepare_read");
+  real_cancel_read = (void (*)(struct wl_display *))dlsym(RTLD_NEXT, "wl_display_cancel_read");
+  real_read_events = (int (*)(struct wl_display *))dlsym(RTLD_NEXT, "wl_display_read_events");
+  if (!real_prepare_read || !real_cancel_read || !real_read_events)
+    fprintf(stderr, "[compat] libwayland < 1.2: event reading through wl_display_dispatch()\n");
+}
+
+__attribute__((visibility("default")))
+int wl_display_prepare_read(struct wl_display *d) {
+  pthread_once(&g_read_once, shim_resolve_read);
+  return real_prepare_read && real_read_events ? real_prepare_read(d) : 0;
+}
+
+__attribute__((visibility("default")))
+void wl_display_cancel_read(struct wl_display *d) {
+  pthread_once(&g_read_once, shim_resolve_read);
+  if (real_cancel_read && real_read_events) real_cancel_read(d);
+}
+
+__attribute__((visibility("default")))
+int wl_display_read_events(struct wl_display *d) {
+  pthread_once(&g_read_once, shim_resolve_read);
+  if (!real_read_events || !real_prepare_read) return wl_display_dispatch(d) < 0 ? -1 : 0;
+  if (!wait_on()) return real_read_events(d);
+  double t = now_ms();
+  int r = real_read_events(d);
+  wait_record("wl_display_read_events", __builtin_return_address(0), now_ms() - t);
+  return r;
+}
 
 static int cmp_d(const void *a, const void *b) {
   double x = *(const double *)a, y = *(const double *)b;
@@ -770,8 +862,10 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
       ((const struct shim_wl_object *)proxy)->interface;
   const char *sig = iface->methods[opcode].signature;
   union wl_argument args[SHIM_MAX_ARGS];
-  int n = 0;
+  int n = 0, new_id_index = -1;
   va_list ap;
+
+  memset(args, 0, sizeof(args));
 
   va_start(ap, flags);
   for (const char *p = sig; *p && n < SHIM_MAX_ARGS; ++p) {
@@ -781,7 +875,7 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
       case 'f': args[n++].f = va_arg(ap, wl_fixed_t); break;
       case 's': args[n++].s = va_arg(ap, const char *); break;
       case 'o': args[n++].o = va_arg(ap, struct wl_object *); break;
-      case 'n': args[n++].o = va_arg(ap, struct wl_object *); break;
+      case 'n': new_id_index = n; args[n++].o = va_arg(ap, struct wl_object *); break;
       case 'a': args[n++].a = va_arg(ap, struct wl_array *); break;
       case 'h': args[n++].h = va_arg(ap, int32_t); break;
       default: break;  // '?' (nullable) and leading since-version digits
@@ -826,9 +920,9 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
 
   struct wl_proxy *new_proxy = NULL;
   if (interface) {
-    new_proxy = shim_marshal_constructor(proxy, opcode, args, interface, version);
+    new_proxy = shim_marshal_constructor(proxy, opcode, args, interface, version, new_id_index);
   } else {
-    wl_proxy_marshal_array(proxy, opcode, args);
+    shim_marshal(proxy, opcode, args);
   }
 
   if (!strcmp(iface->name, "wl_webos_exported") &&

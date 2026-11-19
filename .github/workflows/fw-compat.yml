@@ -5,7 +5,8 @@
 #
 #   - normal packages: every firmware image from webOS 5 on must pass
 #   - COMPAT_WEBOS4=1: webOS 4.4 up to (not including) webOS 7 must pass
-#   - COMPAT_WEBOS3=1: webOS 3 up to (not including) webOS 7 must pass
+#   - COMPAT_WEBOS3=1: webOS 3 up to (not including) webOS 7 must pass;
+#     webOS 2.2 too for the apps without media plugins (compat_test, input_test)
 #
 # make-compat-ipk.sh also runs tools/check-compat-ipk.py on each package
 # (loader, DT_RPATH, NEEDED shims, preload patch, webOS 4 and 3 extras).
@@ -86,7 +87,9 @@ jobs:
                 case $mode in
                   normal) env=(); check=(--require 5) ;;
                   webos4) env=(COMPAT_WEBOS4=1); check=(--webos4 --require 4.4:7) ;;
-                  webos3) env=(COMPAT_WEBOS3=1); check=(--webos3 --require 3:7) ;;
+                  webos3) env=(COMPAT_WEBOS3=1); check=(--webos3 --require 3:7)
+                          # apps without media plugins also load on webOS 2.2
+                          case $name in compat_test|input_test) check=(--webos3 --require 2:7) ;; esac ;;
                 esac
                 env "${env[@]}" flutter-webos build webos --release --legacy
                 stage=$(echo build/webos-compat/release/stage/*)

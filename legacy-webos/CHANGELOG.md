@@ -13,6 +13,13 @@ tag on both.
   two Luna, two pbnjson and two SQLite functions, the `wl_webos_xinput`
   protocol), a `libudev.so.1` stand-in and Debian's libwebp where plugins use
   them. The firmware check passes for webOS 3.4 to 6.4 for every test app.
+- webOS 2 (same `COMPAT_WEBOS3=1` package, on paper): apps without media or
+  image plugins pass the firmware check for webOS 2.2. The Wayland shim
+  marshals through `wl_proxy_create`/varargs `wl_proxy_marshal` on
+  libwayland < 1.4 and emulates `prepare_read`/`read_events`/`cancel_read` on
+  < 1.2; `libwebos3-compat` adds `LSRegisterApplicationService` (falls back to
+  `LSRegister`) and `g_unix_fd_source_new`. The shim's timing wrappers no
+  longer call a missing function.
 - Wayland shim: works with libwayland < 1.10 (webOS 3), which has no
   `wl_proxy_get_version` or versioned constructor; it records proxy versions
   itself there. Found because the firmware check now also checks the bundled

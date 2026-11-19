@@ -1,7 +1,8 @@
 // webOS 3 compatibility library (libwebos3-compat.so, COMPAT_WEBOS3=1 only).
 //
 // LG's embedder (libflutter_webos_media.so) and the plugin libraries are built
-// against webOS 26. On webOS 3.x the firmware lacks a few functions they call;
+// against webOS 26. On webOS 3.x (and, for the core app, 2.x) the firmware
+// lacks a few functions they call;
 // this library provides them. Built with the LG NDK's g++ so std::string has
 // the same (C++11) ABI as LG's binaries. The C++ luna-service2 wrapper is a
 // separate library (compat/webos3/luna-service2pp).
@@ -11,6 +12,8 @@
 
 #include <dlfcn.h>
 #include <stdio.h>
+
+#include <glib.h>
 
 #include <map>
 #include <string>
@@ -61,6 +64,80 @@ bool LSMessageIsConnected(LSMessage *msg)
     using Fn = bool (*)(LSMessage *);
     static Fn real = next_symbol<Fn>("LSMessageIsConnected");
     return real ? real(msg) : true;
+}
+
+struct LSHandle;
+
+// luna-service2 >= 3.x (webOS 3); webOS 2's library only has LSRegister.
+// LG's embedder registers the app's Luna service with it.
+__attribute__((visibility("default")))
+bool LSRegisterApplicationService(const char *name, const char *app_id, LSHandle **sh,
+                                  LSError *lserror)
+{
+    using Fn = bool (*)(const char *, const char *, LSHandle **, LSError *);
+    static Fn real = next_symbol<Fn>("LSRegisterApplicationService");
+    if (real)
+        return real(name, app_id, sh, lserror);
+    using RegisterFn = bool (*)(const char *, LSHandle **, LSError *);
+    static RegisterFn reg = reinterpret_cast<RegisterFn>(dlsym(RTLD_DEFAULT, "LSRegister"));
+    return reg && reg(name, sh, lserror);
+}
+
+// ---------------------------------------------------------------------------
+// glib >= 2.36: g_unix_fd_source_new (LG's embedder watches an fd with it).
+// webOS 2 has glib 2.34, so build the same source from g_source_add_poll.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct UnixFdSource
+{
+    GSource source;
+    GPollFD pfd;
+};
+
+gboolean unix_fd_prepare(GSource *, gint *timeout)
+{
+    *timeout = -1;
+    return FALSE;
+}
+
+gboolean unix_fd_check(GSource *source)
+{
+    auto *s = reinterpret_cast<UnixFdSource *>(source);
+    return (s->pfd.revents & s->pfd.events) != 0;
+}
+
+gboolean unix_fd_dispatch(GSource *source, GSourceFunc callback, gpointer user_data)
+{
+    auto *s = reinterpret_cast<UnixFdSource *>(source);
+    if (!callback)
+        return G_SOURCE_REMOVE;
+    // g_source_set_callback() stores a GUnixFDSourceFunc as a GSourceFunc
+    // (glib does the same); cast back through void *.
+    using FdFunc = gboolean (*)(gint, GIOCondition, gpointer);
+    return reinterpret_cast<FdFunc>(reinterpret_cast<void *>(callback))(
+        s->pfd.fd, static_cast<GIOCondition>(s->pfd.revents & s->pfd.events), user_data);
+}
+
+GSourceFuncs unix_fd_funcs = {unix_fd_prepare, unix_fd_check, unix_fd_dispatch, nullptr, nullptr, nullptr};
+
+} // namespace
+
+__attribute__((visibility("default")))
+GSource *g_unix_fd_source_new(gint fd, GIOCondition condition)
+{
+    using Fn = GSource *(*)(gint, GIOCondition);
+    static Fn real = next_symbol<Fn>("g_unix_fd_source_new");
+    if (real)
+        return real(fd, condition);
+    GSource *source = g_source_new(&unix_fd_funcs, sizeof(UnixFdSource));
+    auto *s = reinterpret_cast<UnixFdSource *>(source);
+    s->pfd.fd = fd;
+    s->pfd.events = static_cast<gushort>(condition);
+    s->pfd.revents = 0;
+    g_source_add_poll(source, &s->pfd);
+    g_source_set_name(source, "legacy-webos unix fd source");
+    return source;
 }
 
 // ---------------------------------------------------------------------------

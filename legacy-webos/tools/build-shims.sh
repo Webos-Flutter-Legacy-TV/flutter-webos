@@ -60,18 +60,18 @@ if [ -e "$NDK_ENV" ]; then
     # (plain structs) comes from the webosbrew sysroot; the NDK has none.
     $CC -O2 -fPIC -Wall -Wextra -idirafter "$WB_SYSROOT/usr/include" \
       -c -o "$W3/out/obj/xinput.o" "$W3/wl_webos_xinput_protocol.c"
+    read -r -a GLIB_CFLAGS <<<"$(pkg-config --cflags glib-2.0)"
+    read -r -a GLIB_LIBS <<<"$(pkg-config --libs glib-2.0)"
     $CXX -std=c++17 -O2 -fPIC -Wall -Wextra -fvisibility=hidden -fvisibility-inlines-hidden \
-      -c -o "$W3/out/obj/webos3_compat.o" "$W3/webos3_compat.cpp"
+      "${GLIB_CFLAGS[@]}" -c -o "$W3/out/obj/webos3_compat.o" "$W3/webos3_compat.cpp"
     $CXX -shared -Wl,-soname,libwebos3-compat.so -o "$W3/out/libwebos3-compat.so" \
-      "$W3/out/obj/webos3_compat.o" "$W3/out/obj/xinput.o" -ldl
+      "$W3/out/obj/webos3_compat.o" "$W3/out/obj/xinput.o" -ldl "${GLIB_LIBS[@]}"
     # libluna-service2++.so.3 from webOS OSE sources, linked against the
     # firmware's C libluna-service2 (empty stand-in with its SONAME, not shipped).
     $CC -shared -nostdlib -Wl,-soname,libluna-service2.so.3 \
       -o "$W3/out/link/libluna-service2.so.3" -x c /dev/null
     LS2_FLAGS=(-std=c++14 -fPIC -Wall -DUSE_PMLOG_DECLARATION -I"$LS2/include/private"
                -I"$LS2/include/public" -I"$LS2/include/public/luna-service2++")
-    read -r -a GLIB_CFLAGS <<<"$(pkg-config --cflags glib-2.0)"
-    read -r -a GLIB_LIBS <<<"$(pkg-config --libs glib-2.0)"
     for src in call subscription condition_variable; do
       $CXX "${LS2_FLAGS[@]}" "${GLIB_CFLAGS[@]}" -O2 -c -o "$W3/out/obj/$src.o" "$LS2/src/$src.cpp"
     done
