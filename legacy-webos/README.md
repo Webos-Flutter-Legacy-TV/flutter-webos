@@ -120,7 +120,10 @@ Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
   is still opaque. The fork places the video again once its hole is visible,
   and the shim schedules a frame after each placement; with both,
   `tests/video_test` showed the video in every stage in 3 of 3 Impeller runs.
-  With Skia the small-window stage was still black in 1 of 2 runs.
+  With Skia a stage's screenshot is still black now and then (about 1 in 10
+  frames, any stage). That is the capture service, not the screen: in a run
+  watched on the TV the video stayed visible while its screenshot was black,
+  and the placement requests are identical in black and good runs.
 - **`compat-dual-surface`** is opt-in. With Impeller, an external texture
   (a `webos_image_texture` image) is drawn on the window's own surface but
   not on the second one, although both share one GL context and full
@@ -315,8 +318,8 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
   four-large-tiles scene runs at ~54 fps with no slow raster frames; cause
   not found.
 - **Moved or resized video**: fixed with the plugins fork (see "Renderer and
-  frame rate"); with Skia the 960x540 stage of `tests/video_test` was still
-  black in 1 of 2 runs.
+  frame rate"). `tests/video_test` screenshots are occasionally black although
+  the video shows on screen (a capture-service artifact).
 - **Video**: after a seek, playback resumes 4-7 s later; switching 2x back to
   1x makes the reported position jump back a few seconds; with two players
   only the newest is visible; per-stream volume is not supported by LG's plugin.
