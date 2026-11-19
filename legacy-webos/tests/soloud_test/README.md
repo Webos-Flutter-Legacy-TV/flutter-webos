@@ -19,3 +19,5 @@ example; `tone5s.wav` is a generated 440 Hz tone.
 
 webOS 6.5.3 (2026-11-19, plugins fb35763, local media): 21/21 pass,
 including `control.loop`; also 21/21 as a `COMPAT_WEBOS4=1` package.
+Checked by ear on the TV the same day: tone, coin effects, music clips (2x,
+quieter, panned) and the three-player mix all play through the TV speakers.
