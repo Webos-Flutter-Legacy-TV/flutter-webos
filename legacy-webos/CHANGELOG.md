@@ -13,6 +13,12 @@ tag on both.
   two Luna, two pbnjson and two SQLite functions, the `wl_webos_xinput`
   protocol), a `libudev.so.1` stand-in and Debian's libwebp where plugins use
   them. The firmware check passes for webOS 3.4 to 6.4 for every test app.
+- Verified on webOS 6.5.3 after the webOS 3/2 changes: normal compat_test
+  (14/14), input_test (keys, Back) and video_test (12/12 in 3 runs) with the
+  new shim; plugins_test 15/15 both as a normal and as a `COMPAT_WEBOS3=1`
+  package (the bundled luna-service2++, libwebos3-compat, libudev stand-in
+  and libwebp loaded); input_test as a `COMPAT_WEBOS3=1` package with
+  `compat-wl-track-versions` (the libwayland < 1.10 path): keys and Back work.
 - webOS 2 (same `COMPAT_WEBOS3=1` package, on paper): apps without media or
   image plugins pass the firmware check for webOS 2.2. The Wayland shim
   marshals through `wl_proxy_create`/varargs `wl_proxy_marshal` on

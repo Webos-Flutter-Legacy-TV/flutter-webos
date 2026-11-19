@@ -251,8 +251,10 @@ COMPAT_WEBOS3=1 flutter-webos build webos --release --legacy
 tools/fw-compat-check.py --db <data dir> --webos3 <stage>/<main> <stage>/lib/*.so <stage>/lib/compat/libwebos3-compat.so ...
 ```
 
-The firmware check passes for webOS 3.4, 3.9, 4.4, 4.10, 5.3 and 6.4, for
-every test app, and for webOS 2.2 for the apps without media or image
+On webOS 6.5.3 a `COMPAT_WEBOS3=1` plugins_test passes all checks with the
+bundled libraries loaded, and input_test works with `compat-wl-track-versions`
+(the webOS 3 Wayland path). The firmware check passes for webOS 3.4, 3.9, 4.4,
+4.10, 5.3 and 6.4, for every test app, and for webOS 2.2 for the apps without media or image
 plugins (compat_test, input_test) (CI). The package suits webOS 2-6 only (as
 `COMPAT_WEBOS4=1`, not webOS 7+).
 Like webOS 4, there is no video placement. Unknowns until it runs on a TV:
