@@ -291,6 +291,10 @@ bool Cdm::decrypt(const CdmSample &s, bool video, std::vector<uint8_t> *out) {
 // SignedMessage { 1: type (varint), 2: msg (bytes), ... } -> msg, or the
 // input unchanged if it does not parse as one.
 std::string signedMessageBody(const std::string &in) {
+  // A SignedMessage starts with its type (field 1, varint: 0x08). Anything
+  // else, such as a bare SignedDrmCertificate (field 1 is the certificate,
+  // field 2 its signature, as Axinom serves it), goes to the CDM as it is.
+  if (in.empty() || static_cast<uint8_t>(in[0]) != 0x08) return in;
   const uint8_t *p = reinterpret_cast<const uint8_t *>(in.data()), *end = p + in.size();
   auto varint = [&](uint64_t *v) {
     *v = 0;

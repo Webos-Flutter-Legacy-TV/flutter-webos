@@ -67,6 +67,7 @@ struct Starfish {
   bool (*rate)(void *, const char *) = nullptr;
   bool (*flush)(void *) = nullptr;
   bool (*set_hdr)(void *, const char *) = nullptr;                                     // optional
+  const char *(*media_id)(void *) = nullptr;
   bool (*change_audio)(void *, const std::string &, const std::string &) = nullptr;  // webOS 6+
   void *obj = nullptr;
 
@@ -88,6 +89,7 @@ struct Starfish {
     SYM(rate, "_ZN17StarfishMediaAPIs11SetPlayRateEPKc");
     SYM(flush, "_ZN17StarfishMediaAPIs5flushEv");
     SYM(set_hdr, "_ZN17StarfishMediaAPIs10setHdrInfoEPKc");
+    SYM(media_id, "_ZN17StarfishMediaAPIs10getMediaIDEv");
     SYM(change_audio,
         "_ZN17StarfishMediaAPIs16changeAudioCodecERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_");
 #undef SYM
@@ -166,6 +168,127 @@ std::string hexAddr(const void *p) {
   snprintf(b, sizeof(b), "%#lx", static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p)));
   return b;
 }
+
+// ---- Luna bus (luna-service2), looked up at run time ----------------------
+// One registration per process, with its own GLib main loop for replies.
+// Used for the video output service: with StarfishMediaAPIs in the app's
+// own process nothing else tells the TV where to show the video (YouTube's
+// app makes the same call), so the decoder stays connected but unseen.
+struct LSErr {
+  int code;
+  char *message;
+  const char *file;
+  int line;
+  const char *func;
+  void *padding;
+  unsigned long magic;
+};
+class Luna {
+ public:
+  static Luna &get() {
+    static Luna l;
+    return l;
+  }
+  bool open(const std::string &app_id) {
+    std::lock_guard<std::mutex> l(m_);
+    if (sh_) return true;
+    if (tried_) return false;
+    tried_ = true;
+    void *ls = dlopen("libluna-service2.so.3", RTLD_NOW);
+    void *gl = dlopen("libglib-2.0.so.0", RTLD_NOW);
+    if (!ls || !gl) { logf("luna: %s", dlerror()); return false; }
+#define LSYM(lib, f, n) f = reinterpret_cast<decltype(f)>(dlsym(lib, n))
+    LSYM(ls, reg_, "LSRegister");
+    LSYM(ls, reg_app_, "LSRegisterApplicationService");
+    LSYM(ls, attach_, "LSGmainContextAttach");
+    LSYM(ls, call_, "LSCallOneReply");
+    LSYM(ls, call_multi_, "LSCall");
+    LSYM(ls, err_init_, "LSErrorInit");
+    LSYM(ls, err_free_, "LSErrorFree");
+    LSYM(ls, payload_, "LSMessageGetPayload");
+    LSYM(gl, ctx_new_, "g_main_context_new");
+    LSYM(gl, loop_new_, "g_main_loop_new");
+    LSYM(gl, loop_run_, "g_main_loop_run");
+#undef LSYM
+    if (!reg_ || !attach_ || !call_ || !err_init_ || !err_free_ || !payload_ || !ctx_new_ || !loop_new_ || !loop_run_) {
+      logf("luna: functions missing");
+      return false;
+    }
+    // Names the app's role may allow: its own id with a suffix, then none.
+    std::string name = app_id + "-wvl1";
+    LSErr e;
+    bool ok = false;
+    if (reg_app_) {
+      err_init_(&e);
+      ok = reg_app_(name.c_str(), app_id.c_str(), &sh_, &e);
+      if (!ok) { logf("luna: register %s for %s: %s", name.c_str(), app_id.c_str(), e.message ? e.message : "?"); err_free_(&e); }
+    }
+    if (!ok) {
+      err_init_(&e);
+      ok = reg_(name.c_str(), &sh_, &e);
+      if (!ok) { logf("luna: register %s: %s", name.c_str(), e.message ? e.message : "?"); err_free_(&e); }
+    }
+    if (!ok) {
+      err_init_(&e);
+      ok = reg_(nullptr, &sh_, &e);
+      if (!ok) { logf("luna: anonymous register: %s", e.message ? e.message : "?"); err_free_(&e); return false; }
+      name = "(anonymous)";
+    }
+    void *ctx = ctx_new_();
+    void *loop = loop_new_(ctx, 0);
+    err_init_(&e);
+    if (!attach_(sh_, ctx, &e)) { logf("luna: attach: %s", e.message ? e.message : "?"); err_free_(&e); sh_ = nullptr; return false; }
+    std::thread([this, loop] { loop_run_(loop); }).detach();
+    logf("luna: registered as %s", name.c_str());
+    return true;
+  }
+  // Asynchronous call; replies are logged and each asks the app for a frame.
+  // subscribe: keep receiving replies (LSCall).
+  bool call(const std::string &uri, const std::string &payload, bool subscribe = false) {
+    if (!sh_) return false;
+    LSErr e;
+    err_init_(&e);
+    unsigned long token = 0;
+    auto fn = subscribe && call_multi_ ? call_multi_ : call_;
+    if (!fn(sh_, uri.c_str(), payload.c_str(), &Luna::onReply, this, &token, &e)) {
+      logf("luna: %s: %s", uri.c_str(), e.message ? e.message : "?");
+      err_free_(&e);
+      return false;
+    }
+    return true;
+  }
+
+ private:
+  static bool onReply(void *, void *msg, void *self) {
+    const char *p = static_cast<Luna *>(self)->payload_(msg);
+    logf("luna reply: %.300s", p ? p : "");
+    requestFrame();
+    return true;
+  }
+
+ public:
+  // Asks the app's engine for a frame (through the Wayland shim).
+  static void requestFrame() {
+    static int (*fn)(void) = reinterpret_cast<int (*)(void)>(dlsym(RTLD_DEFAULT, "compat_request_frame"));
+    if (fn) fn();
+  }
+
+ private:
+  std::mutex m_;
+  bool tried_ = false;
+  void *sh_ = nullptr;
+  bool (*reg_)(const char *, void **, LSErr *) = nullptr;
+  bool (*reg_app_)(const char *, const char *, void **, LSErr *) = nullptr;
+  bool (*attach_)(void *, void *, LSErr *) = nullptr;
+  bool (*call_)(void *, const char *, const char *, bool (*)(void *, void *, void *), void *, unsigned long *, LSErr *) = nullptr;
+  bool (*call_multi_)(void *, const char *, const char *, bool (*)(void *, void *, void *), void *, unsigned long *, LSErr *) = nullptr;
+  bool (*err_init_)(LSErr *) = nullptr;
+  void (*err_free_)(LSErr *) = nullptr;
+  const char *(*payload_)(void *) = nullptr;
+  void *(*ctx_new_)() = nullptr;
+  void *(*loop_new_)(void *, int) = nullptr;
+  void (*loop_run_)(void *) = nullptr;
+};
 
 // Debug options: words in <app dir>/compat-l1-opts (noaudio, nodrm, svp30,
 // h264: never pick HEVC, noabr: no adaptive quality switching, slownet:
@@ -374,6 +497,19 @@ class Player {
         std::lock_guard<std::mutex> l(m_);
         loaded_ = true;
         cv_.notify_all();
+        break;
+      }
+      case 0x4: {  // video info: {"context":..,"video":{"width":..,"height":..}}
+        std::string js = str ? str : "";
+        std::string ctx = jsonValue(js, "context");
+        size_t v = js.find("\"video\"");
+        int w = v != std::string::npos ? atoi(jsonValue(js.substr(v), "width").c_str()) : 0;
+        int h = v != std::string::npos ? atoi(jsonValue(js.substr(v), "height").c_str()) : 0;
+        if (!ctx.empty()) {
+          std::lock_guard<std::mutex> l(m_);
+          media_ctx_ = ctx;
+        }
+        if (w > 0 && h > 0) placeVideo(w, h);
         break;
       }
       case 0x1a: emit("{\"playing\":true}"); break;
@@ -659,7 +795,9 @@ class Player {
     }
     std::string apssh = b64decode(r->pssh_b64);
     if (!addLicence(apssh.empty() ? ignored : apssh)) return false;
-    if (t.codec != atrack_.codec || audioInfo(t) != audioInfo(atrack_)) {
+    // Same codec: the decoder takes the new track as it is (only a different
+    // codec needs changeAudioCodec, which fails for an unchanged one).
+    if (t.codec != atrack_.codec) {
       if (!sf_.change_audio) {
         logf("audio track %d: codec %s needs changeAudioCodec (webOS 6 and later)", i, t.codec.c_str());
         return false;
@@ -677,6 +815,56 @@ class Player {
     arep_ = r;
     audio_cur_ = i;
     return true;
+  }
+
+  // Tells the TV's video output service where to show this player's video
+  // (1920x1080 screen coordinates, aspect kept, centred). Needed with an
+  // in-process StarfishMediaAPIs player; repeated when the size changes.
+  void placeVideo(int w, int h) {
+    if (opt("noplace") || w <= 0 || h <= 0) return;
+    std::string ctx;
+    {
+      std::lock_guard<std::mutex> l(m_);
+      if (w == placed_w_ && h == placed_h_) return;
+      ctx = media_ctx_;
+    }
+    if (ctx.empty() && sf_.media_id && sf_.obj) {
+      const char *id = sf_.media_id(sf_.obj);
+      if (id) ctx = id;
+    }
+    if (ctx.empty()) { logf("placeVideo: no media id yet"); return; }
+    if (!Luna::get().open(jsonValue(option_, "appId"))) return;
+    {
+      std::lock_guard<std::mutex> l(m_);
+      placed_w_ = w;
+      placed_h_ = h;
+    }
+    double scale = std::min(1920.0 / w, 1080.0 / h);
+    int ow = static_cast<int>(w * scale + 0.5), oh = static_cast<int>(h * scale + 0.5);
+    int ox = (1920 - ow) / 2, oy = (1080 - oh) / 2;
+    char p[512];
+    snprintf(p, sizeof(p),
+             "{\"context\":\"%s\",\"fullScreen\":false,\"originalInput\":{\"x\":0,\"y\":0,\"width\":%d,\"height\":%d},"
+             "\"sourceInput\":{\"x\":0,\"y\":0,\"width\":%d,\"height\":%d},"
+             "\"displayOutput\":{\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d}}",
+             ctx.c_str(), w, h, w, h, ox, oy, ow, oh);
+    logf("setDisplayWindow %s", p);
+    Luna::get().call("luna://com.webos.service.videooutput/display/setDisplayWindow", p);
+    // The TV applies the area asynchronously; the app's surface (with the
+    // video widget's transparent hole) must be committed after that, or the
+    // area stays black. Ask for frames when it reports the area applied
+    // (as YouTube's app subscribes), and a few times anyway.
+    if (!apply_subscribed_) {
+      apply_subscribed_ = true;
+      Luna::get().call("luna://com.webos.service.videooutput/display/getApplyDoneWindowRegion",
+                       "{\"subscribe\":true,\"context\":\"" + ctx + "\"}", true);
+    }
+    std::thread([] {
+      for (int ms : {500, 500, 1000, 2000}) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        Luna::requestFrame();
+      }
+    }).detach();
   }
 
   static double nowUtc() {
@@ -874,6 +1062,7 @@ class Player {
            std::to_string(has_audio_ ? audio_opts_.size() : 0) + ",\"audioTrackInfo\":[" + tracks + "]}]}}");
     }
     emit("{\"loadCompleted\":true}");
+    placeVideo(static_cast<int>(vtrack_.width), static_cast<int>(vtrack_.height));
     {
       std::lock_guard<std::mutex> l(m_);
       if (want_play_) sf_.play(sf_.obj);
@@ -1017,6 +1206,9 @@ class Player {
   int audio_pending_ = -1;
   Representation *arep_ = nullptr;
   std::atomic<int> internal_seeks_{0};
+  std::string media_ctx_;  // the pipeline's media id ("context" in its events)
+  int placed_w_ = 0, placed_h_ = 0;
+  bool apply_subscribed_ = false;
   bool live_ = false;
   int64_t origin_ms_ = 0;       // presentation time shown as position 0 (live: window start)
   int64_t live_window_ms_ = 0;  // live: time-shift window length at load

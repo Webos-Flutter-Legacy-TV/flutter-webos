@@ -779,6 +779,13 @@ unsigned int eglQuerySurface(void *dpy, void *surf, int attr, int *value) {
   if (ok && attr == 0x313D /* EGL_BUFFER_AGE_EXT */ && value) {
     int raw = *value;
     *value = dual_buffer_age(surf, mapped, raw);
+    // While media is loaded, report "unknown" (0): the embedder then redraws
+    // the whole frame. Its partial redraw trusts the age, and with Mali's
+    // the transparent hole a video widget leaves over the video plane was in
+    // one buffer only: the next frame on another buffer put the black back
+    // (seen with the in-process L1 Widevine player, whose video is under
+    // the UI; NDL's is drawn above it). Redraws are rare during playback.
+    if (dual_media_active()) *value = 0;
     static int logged;
     if (wait_on() && logged < 12) {
       logged++;
@@ -1088,6 +1095,13 @@ static void shim_send_pop_route(void) {
                              sizeof(json) - 1, NULL};
   int r = g_send_platform_message(g_engine, &msg);
   if (g_kb_log) fprintf(stderr, "[compat] Back -> popRoute (result %d)\n", r);
+}
+
+// For libwv-l1 (the in-process L1 Widevine player): one more frame once the
+// TV has applied the video's display area, so the app's surface with the
+// video widget's hole is committed after it (else the area stays black).
+__attribute__((visibility("default"))) int compat_request_frame(void) {
+  return (g_engine && g_schedule_frame) ? g_schedule_frame(g_engine) : -1;
 }
 
 static void shim_schedule_frame_after_placement(void) {

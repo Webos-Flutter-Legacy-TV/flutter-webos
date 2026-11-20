@@ -56,15 +56,37 @@ terms it ships under.
 
 ## Status (webOS 6.5.3, LG C1)
 
-| Part | Status |
+Checked on the TV, picture seen on screen (20 November 2026):
+
+| Case | Result |
 | --- | --- |
-| Licence by URL | Works |
-| Secure decoding, H.264 1080p and 4K, with audio, seeking | Works (decoder reserved, frames decoded, position advances) |
-| **Picture on screen** | **Black.** The TV connects the decoder to its main video output, but at opacity 0. Under investigation |
-| HEVC, VP9, AV1, Dolby Vision, licence callback, adaptive quality, audio tracks, E-AC-3/AC-3/Opus, HDR metadata, live DASH and seeking, several periods, several keys, key rotation | Built, not tested on a TV yet. Parsing checked on a PC with public streams (HEVC, E-AC-3 7.1 and stereo, multi-language AAC, live SegmentTemplate and SegmentTimeline, Axinom's two-period multi-key stream with `seig` key ids); VP9, AV1, Dolby Vision, Opus, Atmos, `mdcv` and in-segment `pssh` only against the specs |
-| In-stream subtitles | Not supported: on webOS 26 the platform draws them; this route has no renderer. Apps can show subtitles with Flutter's `closedCaptionFile` |
-| Live multi-period changes, HLS, CMAF `cbcs` with HLS, PlayReady on this route | Not done |
-| webOS 3–5, 7+ | Untested |
+| 1080p H.264, 1080p HEVC | Plays |
+| 4K H.264 (27 Mbit/s), 4K HEVC (20 Mbit/s) | Plays |
+| Licence by URL, licence callback | Works |
+| Seeking | Works |
+| Audio track switch (5 languages, same codec) | Works |
+| Multi-period, several keys (Axinom test vector) | Not verified: Axinom's licence server answers 403 to the published token |
+
+Built and checked on a PC with public streams, not yet on the TV: VP9, AV1,
+Dolby Vision, E-AC-3/AC-3/Opus, HDR metadata, live DASH and seeking, key
+rotation, adaptive quality switching. Not supported: in-stream subtitles (no
+renderer on this route; use Flutter's `closedCaptionFile`), HLS, PlayReady on
+this route, live period changes. webOS 3-5 and 7+ are untested.
+
+### Showing the picture
+
+The player runs in the app, under the Flutter UI; the video widget leaves a
+transparent hole over it. Two things make it visible:
+
+- The player places its video with the video output service
+  (`luna://com.webos.service.videooutput/display/setDisplayWindow`, media id
+  as context, 1920x1080 coordinates), subscribes to
+  `display/getApplyDoneWindowRegion`, and asks the app for a frame on each
+  reply (`compat_request_frame` from the Wayland shim): the app's surface has
+  to be committed after the TV applied the area.
+- The Wayland shim reports buffer age 0 while media is loaded, so the
+  embedder redraws whole frames: with Mali's buffer age its partial redraw
+  left the hole in one buffer only, and the black came back.
 
 ## Debug options
 
