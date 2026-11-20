@@ -1,5 +1,7 @@
 #include "dash.h"
 
+#include <ctime>
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -157,6 +159,19 @@ std::string fill(std::string t, const std::string &id, uint32_t bw, uint64_t num
   return t;
 }
 
+// ISO 8601 date-time (2024-01-01T00:00:00Z, optional fraction) -> UTC seconds.
+double isoDate(const std::string &s) {
+  struct tm tm = {};
+  double frac = 0;
+  if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) < 6)
+    return 0;
+  size_t dot = s.find('.');
+  if (dot != std::string::npos) frac = atof(s.c_str() + dot);
+  tm.tm_year -= 1900;
+  tm.tm_mon -= 1;
+  return static_cast<double>(timegm(&tm)) + frac;
+}
+
 struct TemplateInfo {
   std::string attrs;
   std::vector<Elem> timeline;
@@ -166,21 +181,33 @@ struct TemplateInfo {
 
 }  // namespace
 
-bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, std::string *err) {
+bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, std::string *err, double now) {
   auto mpds = children(x, 0, x.size(), "MPD");
   if (mpds.empty()) { *err = "no MPD element"; return false; }
   const Elem &mpd = mpds[0];
-  if (attr(mpd.attrs, "type") == "dynamic") { *err = "live (dynamic) manifests are not supported"; return false; }
-  out->duration = isoDuration(attr(mpd.attrs, "mediaPresentationDuration"));
+  out->dynamic = attr(mpd.attrs, "type") == "dynamic";
+  out->duration = out->dynamic ? 0 : isoDuration(attr(mpd.attrs, "mediaPresentationDuration"));
+  double tsb = 0;
+  if (out->dynamic) {
+    out->availability_start = isoDate(attr(mpd.attrs, "availabilityStartTime"));
+    out->min_update = isoDuration(attr(mpd.attrs, "minimumUpdatePeriod"));
+    out->presentation_delay = isoDuration(attr(mpd.attrs, "suggestedPresentationDelay"));
+    tsb = isoDuration(attr(mpd.attrs, "timeShiftBufferDepth"));
+    if (tsb <= 0) tsb = 60;
+  }
   std::string base = mpd_url;
   for (auto &b : children(x, mpd.body, mpd.end, "BaseURL")) base = resolve(base, text(x, b));
   auto periods = children(x, mpd.body, mpd.end, "Period");
   if (periods.empty()) { *err = "no Period"; return false; }
-  const Elem &period = periods[0];
-  if (out->duration <= 0) out->duration = isoDuration(attr(period.attrs, "duration"));
+  const Elem &period = periods[out->dynamic ? periods.size() - 1 : 0];
+  if (!out->dynamic && out->duration <= 0) out->duration = isoDuration(attr(period.attrs, "duration"));
+  // Live: seconds since the period started (segments must have ended by then).
+  double live_now = out->dynamic ? now - out->availability_start - isoDuration(attr(period.attrs, "start")) : 0;
   for (auto &b : children(x, period.body, period.end, "BaseURL")) base = resolve(base, text(x, b));
 
+  int group = -1;
   for (auto &as : children(x, period.body, period.end, "AdaptationSet")) {
+    group++;
     std::string as_base = base;
     for (auto &b : children(x, as.body, as.end, "BaseURL")) as_base = resolve(as_base, text(x, b));
     std::string content = attr(as.attrs, "contentType"), as_mime = attr(as.attrs, "mimeType"),
@@ -219,6 +246,9 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
       rep.content = content;
       if (rep.content.empty()) rep.content = rep.mime.substr(0, rep.mime.find('/'));
       rep.pssh_b64 = as_pssh;
+      rep.group = group;
+      rep.lang = attr(r.attrs, "lang");
+      if (rep.lang.empty()) rep.lang = attr(as.attrs, "lang");
       for (auto &cp : children(x, r.body, r.end, "ContentProtection"))
         for (auto &ps : children(x, cp.body, cp.end, "pssh")) rep.pssh_b64 = text(x, ps);
       std::string rbase = as_base;
@@ -238,12 +268,13 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
         range(attr(sb[0].attrs, "indexRange"), &rep.index_first, &rep.index_last);
         for (auto &in : children(x, sb[0].body, sb[0].end, "Initialization"))
           range(attr(in.attrs, "range"), &rep.init.first, &rep.init.last);
-        if (rep.index_first < 0) continue;  // no index: unsupported
+        if (rep.index_first < 0 || out->dynamic) continue;  // no index, or live: unsupported
       } else if (tpl.present) {
         double timescale = atof(attr(tpl.attrs, "timescale").c_str());
         if (timescale <= 0) timescale = 1;
         uint64_t number = attr(tpl.attrs, "startNumber").empty() ? 1 : strtoull(attr(tpl.attrs, "startNumber").c_str(), nullptr, 10);
         std::string init_t = attr(tpl.attrs, "initialization"), media_t = attr(tpl.attrs, "media");
+        double pto = atof(attr(tpl.attrs, "presentationTimeOffset").c_str());
         rep.init.url = resolve(rbase, fill(init_t, rep.id, rep.bandwidth, 0, 0));
         if (!tpl.timeline.empty()) {
           uint64_t t = 0;
@@ -251,8 +282,10 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
             if (!attr(s.attrs, "t").empty()) t = strtoull(attr(s.attrs, "t").c_str(), nullptr, 10);
             uint64_t d = strtoull(attr(s.attrs, "d").c_str(), nullptr, 10);
             long r = atol(attr(s.attrs, "r").c_str());
-            if (r < 0) r = d ? static_cast<long>(std::ceil((out->duration * timescale - t) / d)) - 1 : 0;
+            double end = out->dynamic ? live_now * timescale + pto : out->duration * timescale;
+            if (r < 0) r = d ? static_cast<long>(std::ceil((end - t) / d)) - 1 : 0;
             for (long k = 0; k <= r; k++) {
+              if (out->dynamic && (t + d - pto) / timescale > live_now) break;  // not available yet
               Segment seg;
               seg.url = resolve(rbase, fill(media_t, rep.id, rep.bandwidth, number++, t));
               seg.start = t / timescale;
@@ -263,12 +296,25 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
           }
         } else {
           double d = atof(attr(tpl.attrs, "duration").c_str());
-          if (d <= 0 || out->duration <= 0) continue;
-          size_t count = static_cast<size_t>(std::ceil(out->duration * timescale / d));
-          for (size_t k = 0; k < count; k++) {
+          if (d <= 0) continue;
+          size_t first = 0, count = 0;
+          if (out->dynamic) {
+            // Segments that have ended, within the time-shift window.
+            double seg = d / timescale;
+            if (live_now < seg) continue;
+            size_t last = static_cast<size_t>(std::floor(live_now / seg)) - 1;
+            double from = live_now - tsb;
+            first = from > 0 ? static_cast<size_t>(std::floor(from / seg)) : 0;
+            if (first > last) first = last;
+            count = last + 1;
+          } else {
+            if (out->duration <= 0) continue;
+            count = static_cast<size_t>(std::ceil(out->duration * timescale / d));
+          }
+          for (size_t k = first; k < count; k++) {
             Segment seg;
-            seg.url = resolve(rbase, fill(media_t, rep.id, rep.bandwidth, number + k, 0));
-            seg.start = k * d / timescale;
+            seg.url = resolve(rbase, fill(media_t, rep.id, rep.bandwidth, number + k, static_cast<uint64_t>(pto + k * d)));
+            seg.start = (pto + k * d) / timescale;
             seg.duration = d / timescale;
             rep.segments.push_back(seg);
           }

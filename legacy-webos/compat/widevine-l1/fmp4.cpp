@@ -88,9 +88,154 @@ void parseEsds(const uint8_t *b, size_t n, Track *t) {
   }
 }
 
+// hvcC (ISO/IEC 14496-15 8.3.3): NAL length size, then arrays of VPS, SPS,
+// PPS (and SEI) NAL units, each prefixed with a 16-bit length.
+void parseHvcC(const uint8_t *b, size_t n, Track *t) {
+  if (n < 23) return;
+  t->nal_length_size = (b[21] & 3) + 1;
+  unsigned arrays = b[22];
+  size_t o = 23;
+  for (unsigned a = 0; a < arrays && o + 3 <= n; a++) {
+    unsigned count = be16(b + o + 1);
+    o += 3;
+    for (unsigned i = 0; i < count && o + 2 <= n; i++) {
+      uint16_t len = be16(b + o);
+      o += 2;
+      if (o + len > n) return;
+      t->annexb_config.append("\0\0\0\1", 4);
+      t->annexb_config.append(reinterpret_cast<const char *>(b + o), len);
+      o += len;
+    }
+  }
+}
+
+// 'colr' with colour type 'nclx': primaries, transfer, matrix, full range.
+void parseColr(const uint8_t *b, size_t n, Track *t) {
+  if (n < 11 || !is(b, "nclx")) return;
+  t->colour_primaries = static_cast<uint8_t>(be16(b + 4));
+  t->transfer = static_cast<uint8_t>(be16(b + 6));
+  t->matrix = static_cast<uint8_t>(be16(b + 8));
+  t->full_range = b[10] & 0x80;
+  t->has_colour = true;
+}
+
+// 'vpcC' (VP codec configuration, version 1): colour information.
+void parseVpcC(const uint8_t *b, size_t n, Track *t) {
+  if (n < 12 || b[0] != 1 || t->has_colour) return;
+  t->full_range = b[6] & 1;
+  t->colour_primaries = b[7];
+  t->transfer = b[8];
+  t->matrix = b[9];
+  t->has_colour = true;
+}
+
+// 'mdcv' (mastering display colour volume) and 'clli' (content light level).
+void parseMdcv(const uint8_t *b, size_t n, Track *t) {
+  if (n < 24) return;
+  for (int i = 0; i < 6; i++) t->primaries_xy[i] = be16(b + 2 * i);
+  t->white_xy[0] = be16(b + 12);
+  t->white_xy[1] = be16(b + 14);
+  t->max_luminance = be32(b + 16);
+  t->min_luminance = be32(b + 20);
+  t->has_mdcv = true;
+}
+void parseClli(const uint8_t *b, size_t n, Track *t) {
+  if (n < 4) return;
+  t->max_cll = be16(b);
+  t->max_fall = be16(b + 2);
+  t->has_clli = true;
+}
+
+// Channels of an AC-3 audio coding mode, plus the LFE channel.
+uint32_t ac3Channels(unsigned acmod, unsigned lfe) {
+  static const uint8_t ch[8] = {2, 1, 2, 3, 3, 4, 4, 5};
+  return ch[acmod & 7] + (lfe ? 1 : 0);
+}
+
+// Bit reader for 'dac3' / 'dec3'.
+struct Bits {
+  const uint8_t *p;
+  size_t n, pos = 0;
+  unsigned get(int count) {
+    unsigned v = 0;
+    for (int i = 0; i < count; i++, pos++) v = (v << 1) | (pos / 8 < n ? (p[pos / 8] >> (7 - pos % 8)) & 1 : 0);
+    return v;
+  }
+};
+
+// 'dac3' (ETSI TS 102 366 F.4): fscod, bsid, bsmod, acmod, lfeon.
+void parseDac3(const uint8_t *b, size_t n, Track *t) {
+  if (n < 3) return;
+  Bits r{b, n};
+  static const uint32_t rates[3] = {48000, 44100, 32000};
+  unsigned fscod = r.get(2);
+  r.get(5);
+  r.get(3);
+  unsigned acmod = r.get(3), lfe = r.get(1);
+  if (fscod < 3) t->sample_rate = rates[fscod];
+  t->channels = ac3Channels(acmod, lfe);
+}
+
+// 'dec3' (ETSI TS 102 366 F.6): the first independent substream gives the
+// rate and the base channels; dependent substreams add the channels in
+// chan_loc; the extension flag marks Joint Object Coding (Atmos).
+void parseDec3(const uint8_t *b, size_t n, Track *t) {
+  if (n < 5) return;
+  Bits r{b, n};
+  static const uint32_t rates[3] = {48000, 44100, 32000};
+  static const uint8_t loc_ch[9] = {2, 2, 1, 1, 2, 2, 2, 1, 1};  // Lc/Rc, Lrs/Rrs, Cs, Ts, Lsd/Rsd, Lw/Rw, Lvh/Rvh, Cvh, LFE2
+  r.get(13);
+  unsigned subs = r.get(3) + 1;
+  for (unsigned i = 0; i < subs; i++) {
+    unsigned fscod = r.get(2);
+    r.get(5);
+    r.get(1);
+    r.get(1);
+    r.get(3);
+    unsigned acmod = r.get(3), lfe = r.get(1);
+    r.get(3);
+    unsigned deps = r.get(4);
+    uint32_t ch = ac3Channels(acmod, lfe);
+    if (deps) {
+      unsigned loc = r.get(9);
+      for (int k = 0; k < 9; k++)
+        if (loc & (1u << k)) ch += loc_ch[k];  // bit 0 (LSB): Lc/Rc
+    } else {
+      r.get(1);
+    }
+    if (i == 0) {
+      if (fscod < 3) t->sample_rate = rates[fscod];
+      t->channels = ch;
+    }
+  }
+  if (r.pos + 16 <= n * 8) {
+    r.get(7);
+    if (r.get(1)) t->atmos = true;  // flag_ec3_extension_type_a
+  }
+}
+
+// 'dOps' (Opus in ISO BMFF) -> the OpusHead header (RFC 7845) the decoder takes.
+void parseDops(const uint8_t *b, size_t n, Track *t) {
+  if (n < 11 || b[0] != 0) return;
+  std::string h("OpusHead", 8);
+  h += char(1);              // version
+  h += char(b[1]);           // channels
+  h += char(b[3]);           // pre-skip, little-endian
+  h += char(b[2]);
+  h += char(b[7]); h += char(b[6]); h += char(b[5]); h += char(b[4]);  // input sample rate
+  h += char(b[9]);           // output gain
+  h += char(b[8]);
+  h += char(b[10]);          // channel mapping family
+  if (b[10] && n >= 13u + b[1]) h.append(reinterpret_cast<const char *>(b + 11), 2 + b[1]);
+  t->opus_head = h;
+  t->channels = b[1];
+  t->sample_rate = 48000;
+}
+
 void parseSampleEntry(const uint8_t *e, size_t n, const uint8_t *type, Track *t) {
-  bool v = is(type, "avc1") || is(type, "avc3") || is(type, "encv");
-  bool a = is(type, "mp4a") || is(type, "enca");
+  bool v = is(type, "avc1") || is(type, "avc3") || is(type, "hev1") || is(type, "hvc1") || is(type, "vp09") ||
+           is(type, "encv");
+  bool a = is(type, "mp4a") || is(type, "ac-3") || is(type, "ec-3") || is(type, "Opus") || is(type, "enca");
   if (!v && !a) return;
   size_t skip = v ? 78 : 28;
   if (n < skip) return;
@@ -99,6 +244,14 @@ void parseSampleEntry(const uint8_t *e, size_t n, const uint8_t *type, Track *t)
   std::string original(reinterpret_cast<const char *>(type), 4);
   boxes(e + skip, n - skip, e, [&](const uint8_t *b, size_t len, const uint8_t *ct, size_t) {
     if (is(ct, "avcC")) parseAvcC(b, len, t);
+    if (is(ct, "hvcC")) parseHvcC(b, len, t);
+    if (is(ct, "vpcC")) parseVpcC(b, len, t);
+    if (is(ct, "colr")) parseColr(b, len, t);
+    if (is(ct, "mdcv")) parseMdcv(b, len, t);
+    if (is(ct, "clli")) parseClli(b, len, t);
+    if (is(ct, "dac3")) parseDac3(b, len, t);
+    if (is(ct, "dec3")) parseDec3(b, len, t);
+    if (is(ct, "dOps")) parseDops(b, len, t);
     if (is(ct, "esds")) parseEsds(b, len, t);
     if (!is(ct, "sinf")) return;
     boxes(b, len, b, [&](const uint8_t *sb, size_t slen, const uint8_t *st, size_t) {
@@ -116,7 +269,12 @@ void parseSampleEntry(const uint8_t *e, size_t n, const uint8_t *type, Track *t)
     });
   });
   if (original == "avc1" || original == "avc3") t->codec = "H264";
+  else if (original == "hev1" || original == "hvc1") t->codec = "H265";
+  else if (original == "vp09") t->codec = "VP9";
   else if (original == "mp4a") t->codec = "AAC";
+  else if (original == "ac-3") t->codec = "AC3";
+  else if (original == "ec-3") t->codec = "AC3 PLUS";
+  else if (original == "Opus" && !t->opus_head.empty()) t->codec = "OPUS";
 }
 
 }  // namespace

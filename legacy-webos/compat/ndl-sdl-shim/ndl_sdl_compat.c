@@ -168,12 +168,15 @@ EXPORT int NDL_MediaMuteDisplay(_Bool onoff) {
 // failure: the licence-callback path is unavailable, licence-URL DRM is not
 // affected.
 static int widevine_deliver(const char *service, const char *session_id, const char *drm_data);
+static int widevine_l1_deliver(const char *service, const char *session_id, const char *drm_data);
 EXPORT int NDL_MediaSetDrmOperation(const char *system_id, const char *drm_data,
                                     const char *drm_msg_type, const char *service,
                                     const char *kid, const char *session_id, int request_id) {
   (void)kid; (void)request_id;
   // Licences for sessions of the Widevine CDM proxy go back to it.
   if (widevine_deliver(service, session_id, drm_data) == 0) return 0;
+  // ... and those of the hardware (L1) route to libwv-l1.
+  if (widevine_l1_deliver(service, session_id, drm_data) == 0) return 0;
   fprintf(stderr, "[ndl-compat] NDL_MediaSetDrmOperation(%s, %s, session %s): not on this firmware\n",
           system_id ? system_id : "", drm_msg_type ? drm_msg_type : "", session_id ? session_id : "");
   return -1;
@@ -501,6 +504,8 @@ static int g_l1_slot = -1;
 static struct {
   int (*load)(const char *, const char *, void (*)(void *, const char *), void *);
   int (*play)(void), (*pause)(void), (*seek)(long long), (*rate)(double), (*unload)(void);
+  int (*deliver)(const char *, const uint8_t *, size_t);
+  int (*select)(const char *, int);
 } l1;
 static int l1_active(void) { return g_l1_slot >= 0 && g_l1_slot == g_cur_slot; }
 static void l1_emit(void *user, const char *json) {
@@ -512,12 +517,10 @@ static int widevine_l1(const char *url, const char *option) {
   if (!url || !option || !app_file_exists("compat-widevine-l1")) return 0;
   const char *d = strstr(option, "\"drm\":{");
   if (!d) return 0;
-  char type[32] = "", lic[16];
+  char type[32] = "", lic[16] = "";
   if (!json_get_string(d, "type", type, sizeof(type)) || strcasecmp(type, "widevine") != 0) return 0;
-  if (!json_get_string(d, "licenseUrl", lic, sizeof(lic)) || !lic[0]) {
-    fprintf(stderr, "[ndl-compat] widevine-l1: licence callback not supported yet; using NDL\n");
-    return 0;
-  }
+  json_get_string(d, "licenseUrl", lic, sizeof(lic));
+  if (!lic[0] && !strstr(d, "\"useLicenseCallback\":true")) return 0;
   if (!l1.load) {
     void *h = dlopen("libwv-l1.so", RTLD_NOW);
     if (!h) { fprintf(stderr, "[ndl-compat] widevine-l1: %s\n", dlerror()); return 0; }
@@ -527,11 +530,31 @@ static int widevine_l1(const char *url, const char *option) {
     l1.seek = (int (*)(long long))dlsym(h, "wvl1_seek");
     l1.rate = (int (*)(double))dlsym(h, "wvl1_set_rate");
     l1.unload = (int (*)(void))dlsym(h, "wvl1_unload");
-    if (!l1.load || !l1.play || !l1.pause || !l1.seek || !l1.rate || !l1.unload) { l1.load = NULL; return 0; }
+    l1.deliver = (int (*)(const char *, const uint8_t *, size_t))dlsym(h, "wvl1_deliver_licence");
+    l1.select = (int (*)(const char *, int))dlsym(h, "wvl1_select_track");
+    if (!l1.load || !l1.play || !l1.pause || !l1.seek || !l1.rate || !l1.unload || !l1.deliver || !l1.select) { l1.load = NULL; return 0; }
   }
   g_l1_slot = g_cur_slot;
   fprintf(stderr, "[ndl-compat] widevine-l1: %s (slot %d) -> libwv-l1\n", url, g_l1_slot);
   return l1.load(url, option, l1_emit, (void *)(intptr_t)g_l1_slot) == 0;
+}
+
+static int widevine_l1_deliver(const char *service, const char *session_id, const char *drm_data) {
+  if (!service || strcmp(service, "legacy-webos-widevine-l1") != 0 || !session_id || !drm_data || !l1.deliver) return -1;
+  uint8_t *lic = malloc(strlen(drm_data) + 1);
+  if (!lic) return -1;
+  size_t n = b64_decode(drm_data, lic);
+  int r = l1.deliver(session_id, lic, n);
+  fprintf(stderr, "[ndl-compat] widevine-l1: reply from app (%zu bytes, session %s): %d\n", n, session_id, r);
+  free(lic);
+  return r;
+}
+
+EXPORT int NDL_MediaSelectTrack(const char *type, int index) {
+  static int (*real)(const char *, int);
+  if (l1_active()) return l1.select(type, index);
+  if (!real) real = (int (*)(const char *, int))dlsym(RTLD_NEXT, "NDL_MediaSelectTrack");
+  return real ? real(type, index) : -1;
 }
 
 EXPORT int NDL_MediaPlay(void) {

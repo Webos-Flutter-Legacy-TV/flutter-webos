@@ -14,12 +14,14 @@
 #include <dlfcn.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -63,6 +65,8 @@ struct Starfish {
   bool (*foreground)(void *) = nullptr;
   bool (*rate)(void *, const char *) = nullptr;
   bool (*flush)(void *) = nullptr;
+  bool (*set_hdr)(void *, const char *) = nullptr;                                     // optional
+  bool (*change_audio)(void *, const std::string &, const std::string &) = nullptr;  // webOS 6+
   void *obj = nullptr;
 
   bool open(const char *app_id) {
@@ -82,6 +86,9 @@ struct Starfish {
     SYM(foreground, "_ZN17StarfishMediaAPIs16notifyForegroundEv");
     SYM(rate, "_ZN17StarfishMediaAPIs11SetPlayRateEPKc");
     SYM(flush, "_ZN17StarfishMediaAPIs5flushEv");
+    SYM(set_hdr, "_ZN17StarfishMediaAPIs10setHdrInfoEPKc");
+    SYM(change_audio,
+        "_ZN17StarfishMediaAPIs16changeAudioCodecERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEES7_");
 #undef SYM
     if (!ctor || !dtor || !load || !feed || !play || !pause || !seek || !unload || !push_eos || !playtime) {
       logf("libplayerAPIs.so.1: missing StarfishMediaAPIs functions");
@@ -97,6 +104,26 @@ struct Starfish {
     if (obj) { dtor(obj); free(obj); obj = nullptr; }
   }
 };
+
+#define kL1Service "legacy-webos-widevine-l1"
+
+std::string b64encode(const std::string &in) {
+  static const char a[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  size_t i = 0;
+  for (; i + 2 < in.size(); i += 3) {
+    uint32_t v = (uint8_t(in[i]) << 16) | (uint8_t(in[i + 1]) << 8) | uint8_t(in[i + 2]);
+    out += a[v >> 18]; out += a[(v >> 12) & 63]; out += a[(v >> 6) & 63]; out += a[v & 63];
+  }
+  if (i < in.size()) {
+    uint32_t v = uint8_t(in[i]) << 16;
+    if (i + 1 < in.size()) v |= uint8_t(in[i + 1]) << 8;
+    out += a[v >> 18]; out += a[(v >> 12) & 63];
+    out += i + 1 < in.size() ? a[(v >> 6) & 63] : '=';
+    out += '=';
+  }
+  return out;
+}
 
 std::string b64decode(const std::string &in) {
   static const std::string a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -139,7 +166,9 @@ std::string hexAddr(const void *p) {
   return b;
 }
 
-// Debug options: words in <app dir>/compat-l1-opts (noaudio, nodrm, svp30).
+// Debug options: words in <app dir>/compat-l1-opts (noaudio, nodrm, svp30,
+// h264: never pick HEVC, noabr: no adaptive quality switching, slownet:
+// count downloads as 3 Mbit/s to test switching).
 bool opt(const char *word) {
   static std::string opts;
   static bool read = false;
@@ -161,6 +190,91 @@ bool opt(const char *word) {
     }
   }
   return opts.find(word) != std::string::npos;
+}
+
+// Major webOS TV version from the platform's os_info ("webos_release":
+// "6.5.3" -> 6; webOS 22 and later report 7 and up). 0 if unknown.
+int webosMajor() {
+  static int v = -1;
+  if (v < 0) {
+    v = 0;
+    if (FILE *f = fopen("/var/run/nyx/os_info.json", "r")) {
+      char buf[8192];
+      size_t r = fread(buf, 1, sizeof(buf) - 1, f);
+      buf[r] = 0;
+      fclose(f);
+      v = atoi(jsonValue(buf, "webos_release").c_str());
+    }
+    logf("webOS %d", v);
+  }
+  return v;
+}
+bool oldWebos() { return webosMajor() > 0 && webosMajor() < 5; }
+
+// Video codec ranking at equal resolution, and the codec family of a
+// representation (quality switching stays within one family).
+int videoFamily(const Representation &r) {
+  const std::string &c = r.codecs;
+  if (c.compare(0, 4, "hev1") == 0 || c.compare(0, 4, "hvc1") == 0) return 3;
+  if ((c.compare(0, 4, "vp09") == 0 || c == "vp9") && r.mime.find("mp4") != std::string::npos) return 2;
+  if (c.compare(0, 4, "avc1") == 0 || c.compare(0, 4, "avc3") == 0) return 1;
+  return 0;
+}
+bool audioSupported(const Representation &r) {
+  const std::string &c = r.codecs;
+  return r.mime.find("mp4") != std::string::npos &&
+         (c.compare(0, 4, "mp4a") == 0 || c == "ac-3" || c == "ec-3" || c.compare(0, 4, "opus") == 0 ||
+          c.compare(0, 4, "Opus") == 0);
+}
+
+// Audio decoder settings for the Load payload and changeAudioCodec (a JSON
+// member without braces; empty when the codec needs none).
+std::string audioInfo(const Track &a) {
+  char b[160];
+  if (a.codec == "AAC") {
+    snprintf(b, sizeof(b), "\"aacInfo\":{\"channels\":%u,\"profile\":%u,\"format\":\"raw\",\"frequency\":%.3f}",
+             a.channels, a.aac_object_type, a.sample_rate / 1000.0);
+    return b;
+  }
+  if (a.codec == "AC3 PLUS") {
+    snprintf(b, sizeof(b), "\"ac3PlusInfo\":{\"channels\":%u,\"frequency\":%.3f}", a.channels + (a.atmos ? 2 : 0),
+             a.sample_rate / 1000.0);
+    return b;
+  }
+  if (a.codec == "OPUS") {
+    snprintf(b, sizeof(b), "\"opusInfo\":{\"channels\":%u,\"frequency\":%.3f,\"streamHeader\":\"", a.channels,
+             a.sample_rate / 1000.0);
+    return b + b64encode(a.opus_head) + "\"}";
+  }
+  return "";
+}
+
+// setHdrInfo payload from the track's mastering display and light level
+// metadata; empty without them (the TV then reads the stream's own).
+std::string hdrPayload(const Track &v) {
+  if (!v.has_mdcv && !v.has_clli) return "";
+  const char *type = v.transfer == 16 ? "HDR10" : v.transfer == 18 ? "HLG" : "none";
+  std::string sei = "{";
+  char b[512];
+  if (v.has_mdcv) {
+    snprintf(b, sizeof(b),
+             "\"displayPrimariesX0\":%u,\"displayPrimariesY0\":%u,\"displayPrimariesX1\":%u,\"displayPrimariesY1\":%u,"
+             "\"displayPrimariesX2\":%u,\"displayPrimariesY2\":%u,\"whitePointX\":%u,\"whitePointY\":%u,"
+             "\"minDisplayMasteringLuminance\":%u,\"maxDisplayMasteringLuminance\":%u",
+             v.primaries_xy[0], v.primaries_xy[1], v.primaries_xy[2], v.primaries_xy[3], v.primaries_xy[4],
+             v.primaries_xy[5], v.white_xy[0], v.white_xy[1], v.min_luminance, v.max_luminance);
+    sei += b;
+  }
+  if (v.has_clli) {
+    snprintf(b, sizeof(b), "%s\"maxContentLightLevel\":%u,\"maxPicAverageLightLevel\":%u", v.has_mdcv ? "," : "",
+             v.max_cll, v.max_fall);
+    sei += b;
+  }
+  sei += "}";
+  snprintf(b, sizeof(b),
+           "\"%s\":{\"transferCharacteristics\":%u,\"colorPrimaries\":%u,\"matrixCoeffs\":%u,\"videoFullRangeFlag\":%s}",
+           oldWebos() ? "mediaVui" : "vui", v.transfer, v.colour_primaries, v.matrix, v.full_range ? "true" : "false");
+  return std::string("{\"hdrType\":\"") + type + "\",\"" + (oldWebos() ? "mediaSei" : "sei") + "\":" + sei + "," + b + "}";
 }
 
 using Emit = void (*)(void *, const char *);
@@ -210,6 +324,24 @@ class Player {
     sf_.rate(sf_.obj, b);
   }
 
+  // Audio track (index into the sourceInfo audioTrackInfo list).
+  bool selectAudio(int index) {
+    std::lock_guard<std::mutex> l(m_);
+    if (index < 0 || index >= static_cast<int>(audio_opts_.size())) return false;
+    if (static_cast<size_t>(index) != audio_cur_) audio_pending_ = index;
+    cv_.notify_all();
+    return true;
+  }
+
+  // Reply to a drmEncrypted request (licence callback).
+  bool deliver(const std::string &session, const std::string &data) {
+    std::lock_guard<std::mutex> l(m_);
+    if (session.compare(0, 5, "wvl1-") != 0) return false;
+    replies_[session] = data;
+    cv_.notify_all();
+    return true;
+  }
+
  private:
   void emit(const std::string &json) {
     if (emit_) emit_(user_, json.c_str());
@@ -223,6 +355,8 @@ class Player {
     static_cast<Player *>(data)->event(type, num, str);
   }
   void event(int type, int64_t num, const char *str) {
+    // webOS 4 and older number the events after end-of-stream 2 lower.
+    if (oldWebos() && type > 0x1c) type += 2;
     // need/enough data, frame ready, buffer full/low: too chatty to log
     if (type != 0x26 && type != 0x27 && type != 0x0 && type != 0x2c && type != 0x2d && type != 0x2e)
       logf("event 0x%x num %lld %.200s", type, (long long)num, str ? str : "");
@@ -239,7 +373,10 @@ class Player {
       }
       case 0x1a: emit("{\"playing\":true}"); break;
       case 0x1b: emit("{\"paused\":true}"); break;
-      case 0x19: emit("{\"seekDone\":true}"); break;
+      case 0x19:
+        if (internal_seeks_ > 0) internal_seeks_--;  // audio track switch: not the app's seek
+        else emit("{\"seekDone\":true}");
+        break;
       case 0x1c: emit("{\"endOfStream\":true}"); break;
       case 0x12: fail("pipeline error " + std::to_string(num)); break;
       case 0x13: fail(std::string("pipeline error ") + (str ? str : "")); break;
@@ -275,24 +412,54 @@ class Player {
     return parseInit(init, track, pssh);
   }
 
-  bool licence(const std::string &pssh) {
+  // One licence-server round trip: by URL, or through the app (licence
+  // callback: the request goes out as the drmEncrypted event webOS 26 NDL
+  // sends, the reply comes back through NDL_MediaSetDrmOperation ->
+  // wvl1_deliver_licence()).
+  bool exchange(const std::string &request, std::string *reply, const char *what) {
     std::string lic_url = jsonValue(option_, "licenseUrl");
-    if (lic_url.empty()) { fail("only licenseUrl licences are supported"); return false; }
-    if (!cdm_.open()) { fail(cdm_.error()); return false; }
-    logf("CDM %s", cdm_.version());
-    std::string cert;
-    long http = wvcompat::Host::httpPost(lic_url, std::string("\x08\x04", 2), "application/octet-stream", &cert);
-    if (http != 200 || !cdm_.setServiceCertificate(cert)) {
-      fail("service certificate: HTTP " + std::to_string(http) + " " + cdm_.error());
+    if (!lic_url.empty()) {
+      long http = wvcompat::Host::httpPost(lic_url, request, "application/octet-stream", reply);
+      if (http == 200) return true;
+      fail(std::string(what) + ": licence server HTTP " + std::to_string(http));
       return false;
     }
+    std::string session = "wvl1-" + std::to_string(++request_no_);
+    {
+      std::lock_guard<std::mutex> l(m_);
+      replies_.erase(session);
+    }
+    emit("{\"drmEncrypted\":{\"systemId\":\"urn:dvb:casystemid:19156\",\"service\":\"" kL1Service
+         "\",\"key\":\"\",\"sessionId\":\"" + session + "\",\"drmMsgType\":\"licenseRequest\",\"drmData\":\"" +
+         b64encode(request) + "\",\"requestId\":" + std::to_string(request_no_) + "}}");
+    logf("%s: %zu bytes to the app (%s)", what, request.size(), session.c_str());
+    std::unique_lock<std::mutex> l(m_);
+    if (!cv_.wait_for(l, std::chrono::seconds(30), [&] { return quit_ || replies_.count(session) != 0; }) || quit_) {
+      if (!quit_) fail(std::string(what) + ": no reply from the app's licence callback");
+      return false;
+    }
+    *reply = replies_[session];
+    replies_.erase(session);
+    return true;
+  }
+
+  bool licence(const std::string &pssh) {
+    bool callback = jsonValue(option_, "licenseUrl").empty();
+    if (callback && jsonValue(option_, "useLicenseCallback") != "true") { fail("no licenseUrl and no licence callback"); return false; }
+    if (!cdm_.open()) { fail(cdm_.error()); return false; }
+    logf("CDM %s, licence %s", cdm_.version(), callback ? "through the app's callback" : "by URL");
+    // The CDM needs the licence server's service certificate (privacy
+    // mode): ask for it with a certificate request, as browsers do.
+    std::string cert;
+    if (!exchange(std::string("\x08\x04", 2), &cert, "service certificate")) return false;
+    if (!cdm_.setServiceCertificate(cert)) { fail("service certificate: " + cdm_.error()); return false; }
     std::string challenge, lic;
     if (!cdm_.generateRequest(pssh, &challenge)) { fail(cdm_.error()); return false; }
-    http = wvcompat::Host::httpPost(lic_url, challenge, "application/octet-stream", &lic);
-    if (http != 200) { fail("licence server HTTP " + std::to_string(http)); return false; }
+    if (!exchange(challenge, &lic, "licence")) return false;
     if (!cdm_.update(lic)) { fail(cdm_.error()); return false; }
     return true;
   }
+
 
   std::string loadPayload() {
     std::string app = jsonValue(option_, "appId"), win = jsonValue(option_, "windowId");
@@ -301,17 +468,16 @@ class Player {
              "\"esInfo\":{\"pauseAtDecodeTime\":true,\"seperatedPTS\":true,\"ptsToDecode\":0,"
              "\"videoWidth\":%u,\"videoHeight\":%u,\"videoFpsValue\":%u,\"videoFpsScale\":1}",
              vtrack_.width, vtrack_.height, fps_ ? fps_ : 30);
-    std::string contents = "{\"codec\":{\"video\":\"H264\"";
-    if (has_audio_) contents += ",\"audio\":\"AAC\"";
+    std::string contents = "{\"codec\":{\"video\":\"" + vtrack_.codec + "\"";
+    if (has_audio_) contents += ",\"audio\":\"" + atrack_.codec + "\"";
     contents += "},\"format\":\"RAW\",\"provider\":\"" + app + "\"," + es;
     if (has_audio_) {
-      char aac[160];
-      snprintf(aac, sizeof(aac), ",\"aacInfo\":{\"channels\":%u,\"profile\":%u,\"format\":\"raw\",\"frequency\":%.3f}",
-               atrack_.channels, atrack_.aac_object_type, atrack_.sample_rate / 1000.0);
-      contents += aac;
+      std::string ai = audioInfo(atrack_);
+      if (!ai.empty()) contents += "," + ai;
+      if (atrack_.atmos) contents += ",\"immersive\":\"ATMOS\"";
     }
     contents += "}";
-    int svp = opt("svp30") ? 30 : 40;
+    int svp = opt("svp30") || oldWebos() ? 30 : 40;  // secure video path version
     std::string p = "{\"args\":[{\"mediaTransportType\":\"BUFFERSTREAM\",\"option\":{";
     p += "\"appId\":\"" + app + "\",";
     if (!win.empty()) p += "\"windowId\":\"" + win + "\",";
@@ -362,7 +528,14 @@ class Player {
       const uint8_t *src = reinterpret_cast<const uint8_t *>(data.data()) + s.offset;
       int64_t pts_ns = s.pts * 1000000000LL / t.timescale;
       std::vector<uint8_t> in, out;
-      if (video) {
+      if (video && t.codec == "VP9") {
+        in.assign(src, src + s.size);  // VP9 frames go as they are
+        if (!s.encrypted && !opt("nodrm") && !t.kid.empty()) {
+          s.encrypted = true;
+          s.iv.assign(16, '\0');
+          s.subsamples.assign(1, {static_cast<uint32_t>(in.size()), 0u});
+        }
+      } else if (video) {
         // AVCC -> Annex B (4-byte lengths become start codes, in the clear
         // part of each subsample), SPS/PPS in front of sync samples.
         if (s.sync) in.assign(t.annexb_config.begin(), t.annexb_config.end());
@@ -410,7 +583,8 @@ class Player {
       int64_t ms = -1;
       {
         std::lock_guard<std::mutex> l(m_);
-        if (loaded_ && frame_pts_ns_ >= 0) ms = frame_pts_ns_ / 1000000;
+        if (loaded_ && frame_pts_ns_ >= 0) ms = frame_pts_ns_ / 1000000 - origin_ms_;
+        if (ms < 0) ms = 0;
       }
       if (ms >= 0 && ms != last) {
         emit("{\"currentTime\":{\"currentTime\":" + std::to_string(ms) + "}}");
@@ -421,28 +595,169 @@ class Player {
     }
   }
 
+  // Prepares audio track i and makes the pipeline take it (changing the
+  // decoder if the codec differs, webOS 6 and later). The caller restarts
+  // feeding from the current position.
+  bool switchAudio(int i) {
+    Representation *r = audio_opts_[i];
+    Track t;
+    std::string ignored;
+    if (!prepareTrack(r, &t, &ignored) || t.codec.empty()) {
+      logf("audio track %d (%s): unusable", i, r->codecs.c_str());
+      return false;
+    }
+    if (t.codec != atrack_.codec || audioInfo(t) != audioInfo(atrack_)) {
+      if (!sf_.change_audio) {
+        logf("audio track %d: codec %s needs changeAudioCodec (webOS 6 and later)", i, t.codec.c_str());
+        return false;
+      }
+      std::string info = "{" + audioInfo(t) + "}";
+      logf("changeAudioCodec %s %s", t.codec.c_str(), info.c_str());
+      if (!sf_.change_audio(sf_.obj, t.codec, info)) {
+        logf("changeAudioCodec failed");
+        return false;
+      }
+    }
+    logf("audio track %d: %s %s %u ch", i, r->lang.c_str(), t.codec.c_str(), t.channels);
+    atrack_ = t;
+    arep_ = r;
+    audio_cur_ = i;
+    return true;
+  }
+
+  static double nowUtc() {
+    return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+  }
+  // Media time of segment idx (or the end of the list).
+  static double nextStart(const std::vector<Segment> &segs, size_t idx) {
+    if (idx < segs.size()) return segs[idx].start;
+    return segs.empty() ? 0 : segs.back().start + segs.back().duration;
+  }
+  // First segment starting at or after t.
+  static size_t firstFrom(const std::vector<Segment> &segs, double t) {
+    size_t i = 0;
+    while (i < segs.size() && segs[i].start < t - 0.01) i++;
+    return i;
+  }
+  // Live: reads the manifest again and takes the new segment lists.
+  bool refreshLive(Manifest *man) {
+    std::string mpd, cr, ct, err;
+    Manifest fresh;
+    if (wvcompat::Host::httpGet(url_, "", &mpd, &cr, &ct) != 200 || !parseMpd(mpd, url_, &fresh, &err, nowUtc())) {
+      logf("live manifest refresh failed %s", err.c_str());
+      return false;
+    }
+    for (auto &r : man->reps)
+      for (auto &f : fresh.reps)
+        if (f.group == r.group && f.id == r.id) {
+          r.segments = std::move(f.segments);
+          break;
+        }
+    return true;
+  }
+
+  // Download speed of video segments, smoothed (bit/s).
+  void measure(size_t bytes, std::chrono::steady_clock::duration d) {
+    double s = std::chrono::duration<double>(d).count();
+    if (s <= 0 || bytes < 100000) return;
+    double bps = bytes * 8 / s;
+    if (opt("slownet") && bps > 3e6) bps = 3e6;  // test: force lower quality
+    speed_bps_ = speed_bps_ > 0 ? 0.7 * speed_bps_ + 0.3 * bps : bps;
+  }
+
+  // Picks the representation for the next video segment: the best one whose
+  // bandwidth fits in 70% of the measured speed (the lowest if none does).
+  void chooseVariant() {
+    if (variants_.size() < 2 || speed_bps_ <= 0) return;
+    size_t want = 0;
+    for (size_t i = 0; i < variants_.size(); i++)
+      if (variants_[i].rep->bandwidth <= 0.7 * speed_bps_) want = i;
+    if (want == cur_) return;
+    // Step up one at a time; drop straight down.
+    if (want > cur_) want = cur_ + 1;
+    Variant &v = variants_[want];
+    if (!v.prepared) {
+      std::string ignored;
+      if (!prepareTrack(v.rep, &v.track, &ignored) || v.track.codec != vtrack_.codec ||
+          (v.track.codec != "VP9" && v.track.nal_length_size != 4)) {
+        logf("representation %s unusable, staying on %s", v.rep->id.c_str(), variants_[cur_].rep->id.c_str());
+        variants_.erase(variants_.begin() + want);
+        if (want < cur_) cur_--;
+        return;
+      }
+      v.prepared = true;
+    }
+    logf("quality: %s -> %s (%ux%u, %u bit/s; measured %.0f bit/s)", variants_[cur_].rep->id.c_str(), v.rep->id.c_str(),
+         v.track.width, v.track.height, v.rep->bandwidth, speed_bps_);
+    cur_ = want;
+    char info[96];
+    snprintf(info, sizeof(info), "{\"videoInfo\":{\"width\":%u,\"height\":%u}}", v.track.width, v.track.height);
+    emit(info);
+  }
+
   void run() {
     std::string mpd, cr, ct, err;
     if (wvcompat::Host::httpGet(url_, "", &mpd, &cr, &ct) != 200) { fail("manifest download failed"); return; }
     Manifest man;
-    if (!parseMpd(mpd, url_, &man, &err)) { fail(err); return; }
-    // Video: highest bandwidth H.264 up to 2160p. Audio: first AAC.
-    Representation *vrep = nullptr, *arep = nullptr;
-    for (auto &r : man.reps) {
-      if (r.content == "video" && r.codecs.compare(0, 4, "avc1") == 0 && r.height <= 2160 &&
-          (!vrep || r.bandwidth > vrep->bandwidth))
-        vrep = &r;
-      if (r.content == "audio" && r.codecs.compare(0, 4, "mp4a") == 0 && !arep) arep = &r;
+    if (!parseMpd(mpd, url_, &man, &err, nowUtc())) { fail(err); return; }
+    live_ = man.dynamic;
+    // Video: the highest resolution up to 2160p; at the same height HEVC,
+    // then VP9, then H.264; then the highest bandwidth.
+    auto usable = [&](const Representation &r) {
+      int f = videoFamily(r);
+      return r.content == "video" && r.height <= 2160 && (f == 1 || (f > 1 && !opt("h264")));
+    };
+    auto better = [&](const Representation &a, const Representation &b) {  // a better than b
+      if (a.height != b.height) return a.height > b.height;
+      if (videoFamily(a) != videoFamily(b)) return videoFamily(a) > videoFamily(b);
+      return a.bandwidth > b.bandwidth;
+    };
+    Representation *vrep = nullptr;
+    for (auto &r : man.reps)
+      if (usable(r) && (!vrep || better(r, *vrep))) vrep = &r;
+    if (!vrep) { fail("no H.264, HEVC or VP9 (MP4) video representation"); return; }
+    // Audio: one choice per AdaptationSet (its highest bandwidth supported
+    // representation), listed to the app as audio tracks; AAC first by default.
+    {
+      std::map<int, Representation *> best;
+      for (auto &r : man.reps)
+        if (r.content == "audio" && audioSupported(r) && (!best[r.group] || r.bandwidth > best[r.group]->bandwidth))
+          best[r.group] = &r;
+      for (auto &g : best)
+        if (g.second) audio_opts_.push_back(g.second);
+      for (size_t i = 0; i < audio_opts_.size(); i++)
+        if (audio_opts_[i]->codecs.compare(0, 4, "mp4a") == 0) { audio_cur_ = i; break; }
     }
-    if (!vrep) { fail("no H.264 video representation"); return; }
+    Representation *arep = audio_opts_.empty() ? nullptr : audio_opts_[audio_cur_];
     std::string pssh = b64decode(vrep->pssh_b64), init_pssh;
     if (!prepareTrack(vrep, &vtrack_, &init_pssh)) { fail("video init segment"); return; }
+    if (vtrack_.codec != "H264" && vtrack_.codec != "H265" && vtrack_.codec != "VP9") {
+      fail("unsupported video codec " + vrep->codecs);
+      return;
+    }
+    if (vtrack_.codec != "VP9" && vtrack_.nal_length_size != 4) {
+      fail("NAL length size " + std::to_string(vtrack_.nal_length_size) + " is not supported");
+      return;
+    }
     fps_ = vrep->fps;
-    has_audio_ = !opt("noaudio") && arep && prepareTrack(arep, &atrack_, &init_pssh);
+    has_audio_ = !opt("noaudio") && arep && prepareTrack(arep, &atrack_, &init_pssh) && !atrack_.codec.empty();
+    arep_ = has_audio_ ? arep : nullptr;
     if (pssh.empty()) pssh = init_pssh;
     if (pssh.empty()) { fail("no Widevine PSSH"); return; }
-    logf("video %s %ux%u %u bit/s, %zu segments; audio %s", vrep->id.c_str(), vtrack_.width, vtrack_.height,
+    logf("video %s %s %ux%u %u bit/s, %zu segments; audio %s", vrep->id.c_str(), vtrack_.codec.c_str(), vtrack_.width, vtrack_.height,
          vrep->bandwidth, vrep->segments.size(), has_audio_ ? arep->id.c_str() : "none");
+    // Adaptive quality: the other representations of the same codec,
+    // switched at segment boundaries by measured download speed.
+    variants_.push_back({vrep, vtrack_, true});
+    if (!opt("noabr")) {
+      for (auto &r : man.reps)
+        if (&r != vrep && usable(r) && videoFamily(r) == videoFamily(*vrep) && r.bandwidth && r.bandwidth < vrep->bandwidth)
+          variants_.push_back({&r, Track(), false});
+    }
+    std::sort(variants_.begin(), variants_.end(),
+              [](const Variant &a, const Variant &b) { return a.rep->bandwidth < b.rep->bandwidth; });
+    cur_ = variants_.size() - 1;
+    if (variants_.size() > 1) logf("adaptive quality: %zu representations", variants_.size());
     if (!licence(pssh)) return;
 
     std::string app = jsonValue(option_, "appId");
@@ -451,6 +766,11 @@ class Player {
     std::string payload = loadPayload();
     logf("Load %s", payload.c_str());
     if (!sf_.load(sf_.obj, payload.c_str(), &Player::onEvent, this)) { fail("StarfishMediaAPIs Load failed"); return; }
+    std::string hdr = hdrPayload(vtrack_);
+    if (!hdr.empty()) {
+      logf("setHdrInfo %s", hdr.c_str());
+      if (!sf_.set_hdr || !sf_.set_hdr(sf_.obj, hdr.c_str())) logf("setHdrInfo failed");
+    }
     {
       std::unique_lock<std::mutex> l(m_);
       if (!cv_.wait_for(l, std::chrono::seconds(10), [this] { return loaded_ || quit_; }) || quit_) {
@@ -463,11 +783,16 @@ class Player {
     char info[256];
     snprintf(info, sizeof(info), "{\"videoInfo\":{\"width\":%u,\"height\":%u}}", vtrack_.width, vtrack_.height);
     emit(info);
-    snprintf(info, sizeof(info),
-             "{\"sourceInfo\":{\"seekable\":true,\"programInfo\":[{\"duration\":%lld,\"numVideoTracks\":1,"
-             "\"numAudioTracks\":%d}]}}",
-             (long long)(man.duration * 1000), has_audio_ ? 1 : 0);
-    emit(info);
+    {
+      std::string tracks;
+      if (has_audio_)
+        for (size_t i = 0; i < audio_opts_.size(); i++)
+          tracks += std::string(i ? "," : "") + "{\"language\":\"" + (audio_opts_[i]->lang.empty() ? "und" : audio_opts_[i]->lang) +
+                    "\",\"trackId\":" + std::to_string(i) + "}";
+      emit(std::string("{\"sourceInfo\":{\"seekable\":") + (live_ ? "false" : "true") + ",\"programInfo\":[{\"duration\":" +
+           std::to_string(static_cast<long long>(man.duration * 1000)) + ",\"numVideoTracks\":1,\"numAudioTracks\":" +
+           std::to_string(has_audio_ ? audio_opts_.size() : 0) + ",\"audioTrackInfo\":[" + tracks + "]}]}}");
+    }
     emit("{\"loadCompleted\":true}");
     {
       std::lock_guard<std::mutex> l(m_);
@@ -475,54 +800,95 @@ class Player {
     }
     clock_ = std::thread([this] { clockLoop(); });
 
+    size_t vi = 0, ai = 0;
+    if (live_) {
+      // Start a few segments behind the live edge (or the suggested delay).
+      const auto &segs = variants_[cur_].rep->segments;
+      if (segs.empty()) { fail("live manifest has no segments yet"); return; }
+      double back = std::max(man.presentation_delay, 3 * segs.back().duration);
+      double target = segs.back().start + segs.back().duration - back;
+      while (vi + 1 < segs.size() && segs[vi].start < target) vi++;
+      if (arep_)
+        while (ai + 1 < arep_->segments.size() && arep_->segments[ai + 1].start <= segs[vi].start) ai++;
+      origin_ms_ = static_cast<int64_t>(segs[vi].start * 1000);
+      logf("live: %zu segments available, starting at %.1f s (%.1f s behind the edge)", segs.size(), segs[vi].start,
+           segs.back().start + segs.back().duration - segs[vi].start);
+    }
     // Samples of the current video and audio segments are fed interleaved in
     // decode order: a whole UHD segment (~40 MB) does not fit the pipeline's
     // video buffer, and it will not start without audio.
     struct Cursor {
+      const Track *track = nullptr;
       std::string data;
       std::vector<Sample> samples;
       size_t next = 0;
       bool loaded = false;
       bool logged = false;
     } vc, ac;
-    size_t vi = 0, ai = 0;
     bool eos = false;
-    auto load = [&](Cursor &c, size_t &idx, Representation *rep, const Track &t) -> bool {
+    auto load = [&](Cursor &c, size_t &idx, Representation *rep, const Track *t) -> bool {
       if (c.loaded && c.next >= c.samples.size()) {
         c.loaded = false;
         idx++;
+      }
+      bool video = &c == &vc;
+      if (video && !c.loaded) {
+        chooseVariant();
+        rep = variants_[cur_].rep;
+        t = &variants_[cur_].track;
       }
       if (c.loaded || !rep || idx >= rep->segments.size()) return true;
       c.data.clear();
       c.samples.clear();
       c.next = 0;
+      auto t0 = std::chrono::steady_clock::now();
       if (!fetch(rep->segments[idx], &c.data)) return false;
-      if (!parseSegment(c.data, t, &c.samples)) logf("segment parse: samples beyond the data");
+      if (video) measure(c.data.size(), std::chrono::steady_clock::now() - t0);
+      if (!parseSegment(c.data, *t, &c.samples)) logf("segment parse: samples beyond the data");
+      c.track = t;
       c.loaded = true;
       return true;
     };
     for (;;) {
       int64_t seek_ms;
+      int audio_switch;
       {
         std::unique_lock<std::mutex> l(m_);
         if (eos) cv_.wait_for(l, std::chrono::milliseconds(200));
         if (quit_) return;
         seek_ms = seek_to_ms_;
         seek_to_ms_ = -1;
+        audio_switch = audio_pending_;
+        audio_pending_ = -1;
+      }
+      if (seek_ms >= 0) {
+        if (live_) {
+          logf("live: seeking is not supported");
+          emit("{\"seekDone\":true}");
+          seek_ms = -1;
+        } else {
+          seek_ms += origin_ms_;
+        }
+      }
+      if (audio_switch >= 0 && has_audio_ && switchAudio(audio_switch) && seek_ms < 0) {
+        // Restart from the current position with the new track.
+        seek_ms = frame_pts_ns_ >= 0 ? frame_pts_ns_ / 1000000 : origin_ms_;
+        internal_seeks_++;
       }
       if (seek_ms >= 0) {
         double t = seek_ms / 1000.0;
-        vi = ai = 0;
-        while (vi + 1 < vrep->segments.size() && vrep->segments[vi + 1].start <= t) vi++;
+        vi = ai = 0;  // (live: the lists start in the time-shift window)
+        const auto &segs = variants_[cur_].rep->segments;
+        while (vi + 1 < segs.size() && segs[vi + 1].start <= t) vi++;
         if (has_audio_)
-          while (ai + 1 < arep->segments.size() && arep->segments[ai + 1].start <= vrep->segments[vi].start) ai++;
+          while (ai + 1 < arep_->segments.size() && arep_->segments[ai + 1].start <= segs[vi].start) ai++;
         vc.loaded = ac.loaded = false;
         eos = false;
-        sf_.seek(sf_.obj, std::to_string(static_cast<long long>(vrep->segments[vi].start * 1000)).c_str());
+        sf_.seek(sf_.obj, std::to_string(static_cast<long long>(segs[vi].start * 1000)).c_str());
         logf("seek to %lld ms: video segment %zu", (long long)seek_ms, vi);
       }
       if (eos) continue;
-      if (!load(vc, vi, vrep, vtrack_) || !load(ac, ai, has_audio_ ? arep : nullptr, atrack_)) {
+      if (!load(vc, vi, vrep, &vtrack_) || !load(ac, ai, arep_, &atrack_)) {
         if (quit()) return;
         fail("segment download failed");
         return;
@@ -531,15 +897,32 @@ class Player {
       bool a_ready = ac.loaded && ac.next < ac.samples.size();
       if (!v_ready && !a_ready) {
         if (vc.loaded || ac.loaded) continue;  // empty segment: load the next
+        if (live_) {
+          // At the live edge: wait, read the manifest again, carry on from
+          // the next segment by time (the lists slide).
+          double vwant = nextStart(variants_[cur_].rep->segments, vi);
+          double awant = arep_ ? nextStart(arep_->segments, ai) : 0;
+          {
+            std::unique_lock<std::mutex> l(m_);
+            cv_.wait_for(l, std::chrono::milliseconds(static_cast<int>(1000 * std::min(std::max(man.min_update, 1.0), 4.0))),
+                         [this] { return quit_; });
+            if (quit_) return;
+          }
+          if (refreshLive(&man)) {
+            vi = firstFrom(variants_[cur_].rep->segments, vwant);
+            if (arep_) ai = firstFrom(arep_->segments, awant);
+          }
+          continue;
+        }
         sf_.push_eos(sf_.obj);
         eos = true;
         continue;
       }
       bool take_video = v_ready;
       if (v_ready && a_ready)
-        take_video = double(vc.samples[vc.next].dts) / vtrack_.timescale <= double(ac.samples[ac.next].dts) / atrack_.timescale;
+        take_video = double(vc.samples[vc.next].dts) / vc.track->timescale <= double(ac.samples[ac.next].dts) / ac.track->timescale;
       Cursor &c = take_video ? vc : ac;
-      if (feedSample(take_video ? vtrack_ : atrack_, c.data, c.samples[c.next], take_video, &c.logged)) c.next++;
+      if (feedSample(*c.track, c.data, c.samples[c.next], take_video, &c.logged)) c.next++;
     }
   }
 
@@ -551,10 +934,27 @@ class Player {
   std::condition_variable cv_;
   bool quit_ = false, loaded_ = false, want_play_ = false, has_audio_ = false;
   int64_t seek_to_ms_ = -1;
+  int request_no_ = 0;
+  std::map<std::string, std::string> replies_;  // licence-callback replies by session
   uint32_t fps_ = 0;
   std::atomic<int64_t> frame_pts_ns_{-1};
   std::atomic<long long> frames_{0};
   Track vtrack_, atrack_;
+  struct Variant {
+    Representation *rep;
+    Track track;
+    bool prepared;
+  };
+  std::vector<Variant> variants_;  // by bandwidth, ascending
+  std::vector<Representation *> audio_opts_;  // audio tracks offered to the app
+  size_t audio_cur_ = 0;
+  int audio_pending_ = -1;
+  Representation *arep_ = nullptr;
+  std::atomic<int> internal_seeks_{0};
+  bool live_ = false;
+  int64_t origin_ms_ = 0;  // live: media time shown as position 0
+  size_t cur_ = 0;
+  double speed_bps_ = 0;
   Cdm cdm_;
   Starfish sf_;
 };
@@ -599,6 +999,18 @@ EXPORT int wvl1_set_rate(double rate) {
   if (!g_player) return -1;
   g_player->setRate(rate);
   return 0;
+}
+// Track selection (NDL_MediaSelectTrack): audio tracks only. 0: taken.
+EXPORT int wvl1_select_track(const char *type, int index) {
+  std::lock_guard<std::mutex> l(g_m);
+  if (!g_player || !type || strcmp(type, "audio") != 0) return -1;
+  return g_player->selectAudio(index) ? 0 : -1;
+}
+// Licence-callback reply (base64-decoded by the caller). 0: taken.
+EXPORT int wvl1_deliver_licence(const char *session, const uint8_t *data, size_t len) {
+  std::lock_guard<std::mutex> l(g_m);
+  if (!g_player || !session || !data) return -1;
+  return g_player->deliver(session, std::string(reinterpret_cast<const char *>(data), len)) ? 0 : -1;
 }
 EXPORT int wvl1_unload(void) {
   std::lock_guard<std::mutex> l(g_m);

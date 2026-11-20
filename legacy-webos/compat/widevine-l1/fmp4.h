@@ -14,11 +14,22 @@ struct Track {
   uint32_t id = 0;
   uint32_t timescale = 0;
   bool video = false;
-  std::string codec;            // "H264", "AAC" (empty: unsupported)
+  // Codec name as StarfishMediaAPIs takes it: "H264", "H265", "VP9", "AAC",
+  // "AC3", "AC3 PLUS", "OPUS" (empty: unsupported).
+  std::string codec;
   uint32_t width = 0, height = 0;
-  uint8_t nal_length_size = 4;  // H.264
-  std::string annexb_config;    // H.264 SPS/PPS with start codes
+  uint8_t nal_length_size = 4;  // H.264 / H.265
+  std::string annexb_config;    // parameter sets (SPS/PPS, HEVC also VPS) with start codes
   uint32_t aac_object_type = 2, channels = 2, sample_rate = 48000;
+  bool atmos = false;           // E-AC-3 with Joint Object Coding
+  std::string opus_head;        // Opus: OpusHead built from 'dOps'
+  // Colour ('colr' nclx or 'vpcC') and HDR metadata ('mdcv', 'clli').
+  bool has_colour = false, full_range = false;
+  uint8_t colour_primaries = 2, transfer = 2, matrix = 2;  // 2: unspecified
+  bool has_mdcv = false, has_clli = false;
+  uint16_t primaries_xy[6] = {}, white_xy[2] = {};  // mdcv order (G, B, R), 0.00002 units
+  uint32_t max_luminance = 0, min_luminance = 0;     // 0.0001 cd/m2
+  uint16_t max_cll = 0, max_fall = 0;
   // Protection ('tenc'); scheme empty when the track is clear.
   std::string scheme, kid, constant_iv;
   uint8_t iv_size = 0, crypt_blocks = 0, skip_blocks = 0;

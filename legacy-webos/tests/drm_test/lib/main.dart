@@ -39,6 +39,16 @@ const cases = <Case>[
   Case('widevine_uhd_h264', 'https://storage.googleapis.com/wvmedia/cenc/h264/tears/tears_uhd.mpd',
       VideoFormat.dash,
       DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://proxy.uat.widevine.com/proxy?provider=widevine_test')),
+  Case('widevine_hevc', 'https://storage.googleapis.com/wvmedia/cenc/hevc/tears/tears.mpd',
+      VideoFormat.dash,
+      DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://proxy.uat.widevine.com/proxy?provider=widevine_test')),
+  Case('widevine_uhd_hevc', 'https://storage.googleapis.com/wvmedia/cenc/hevc/tears/tears_uhd.mpd',
+      VideoFormat.dash,
+      DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://proxy.uat.widevine.com/proxy?provider=widevine_test')),
+  Case('widevine_audio_switch',
+      'https://storage.googleapis.com/shaka-demo-assets/angel-one-widevine/dash.mpd',
+      VideoFormat.dash,
+      DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://cwip-shaka-proxy.appspot.com/no_auth')),
   Case('playready_smooth',
       'https://test.playready.microsoft.com/smoothstreaming/SSWSS720H264PR/SuperSpeedway_720.ism/Manifest',
       VideoFormat.ss,
@@ -112,6 +122,18 @@ class _DrmPageState extends State<DrmPage> {
         await c.initialize().timeout(const Duration(seconds: 30));
         setState(() => _c = c);
         await c.play();
+        if (k.name == 'widevine_audio_switch') {
+          // Multi-language stream: list the audio tracks, switch to the
+          // second one and check that playback keeps going.
+          await Future.delayed(const Duration(seconds: 4));
+          log('audio tracks: ${_tracks(c)} ${(c.value as dynamic).audioTracks}');
+          final before = c.value.position.inMilliseconds;
+          await c.selectAudioTrack(1);
+          log('selected audio track 1 at ${before}ms');
+          await Future.delayed(const Duration(seconds: 6));
+          log('after switch: position ${c.value.position.inMilliseconds}ms');
+          log('STEP audio_switch_done');
+        }
         if (k.name == 'widevine_seek') {
           // Seek through the proxy, then keep playing so the adaptive logic
           // can switch bitrates (watch videoInfo events in compat.log).
