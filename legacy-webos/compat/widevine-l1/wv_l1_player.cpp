@@ -291,7 +291,8 @@ class Luna {
 };
 
 // Debug options: words in <app dir>/compat-l1-opts (noaudio, nodrm, svp30,
-// h264: never pick HEVC, noabr: no adaptive quality switching, slownet:
+// h264: never pick HEVC, noabr: no adaptive quality switching, noprefetch:
+// fetch each segment only when needed, slownet:
 // count downloads as 3 Mbit/s to test switching).
 bool opt(const char *word) {
   static std::string opts;
@@ -1072,7 +1073,22 @@ class Player {
     // Samples of the current video and audio segments are fed interleaved in
     // decode order: a whole UHD segment (~40 MB) does not fit the pipeline's
     // video buffer, and it will not start without audio.
+    // The next segment of a track downloads in the background while the
+    // current one is fed (a 4K segment is ~50 MB: fetched in turn, the
+    // decoder could run dry meanwhile).
+    struct Prefetch {
+      std::thread th;
+      std::string key;  // URL and byte range of the segment it holds
+      std::string data;
+      bool ok = false;
+      std::chrono::steady_clock::duration took{};
+      void wait() {
+        if (th.joinable()) th.join();
+      }
+      ~Prefetch() { wait(); }
+    };
     struct Cursor {
+      Prefetch pf;
       const Track *track = nullptr;
       double offset = 0;  // the segment's part: media -> presentation time
       std::string data;
@@ -1099,9 +1115,28 @@ class Player {
       c.data.clear();
       c.samples.clear();
       c.next = 0;
-      auto t0 = std::chrono::steady_clock::now();
-      if (!fetch(sg, &c.data)) return false;
-      if (video) measure(c.data.size(), std::chrono::steady_clock::now() - t0);
+      c.pf.wait();
+      auto key = [](const Segment &x) { return x.url + "#" + std::to_string(x.first); };
+      if (c.pf.ok && c.pf.key == key(sg)) {
+        c.data.swap(c.pf.data);
+        if (video) measure(c.data.size(), c.pf.took);
+      } else {
+        auto t0 = std::chrono::steady_clock::now();
+        if (!fetch(sg, &c.data)) return false;
+        if (video) measure(c.data.size(), std::chrono::steady_clock::now() - t0);
+      }
+      c.pf.ok = false;
+      c.pf.data.clear();
+      if (idx + 1 < rep->segments.size() && !opt("noprefetch")) {
+        Segment next = rep->segments[idx + 1];
+        c.pf.key = key(next);
+        Prefetch *pf = &c.pf;
+        c.pf.th = std::thread([this, pf, next] {
+          auto t0 = std::chrono::steady_clock::now();
+          pf->ok = fetch(next, &pf->data);
+          pf->took = std::chrono::steady_clock::now() - t0;
+        });
+      }
       std::vector<std::string> psshs;
       if (!parseSegment(c.data, *t, &c.samples, &psshs)) logf("segment parse: samples beyond the data");
       for (auto &ps : psshs)

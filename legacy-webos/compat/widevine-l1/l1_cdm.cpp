@@ -164,8 +164,12 @@ const char *Cdm::version() const { return impl_->get_version ? impl_->get_versio
 
 bool Cdm::open() {
   Impl &d = *impl_;
+  // webOS 5 to 23 (firmware 5.x-8.x): libwvcdm_shared.so; webOS 24 and later
+  // (9.x-11.x) ship the same CDM_10 wrapper as libwidevine-wrapper.so.1.
+  // webOS 4 and older have an older, unversioned CDM interface (unsupported).
   d.lib = dlopen("/usr/lib/libwvcdm_shared.so", RTLD_NOW);
-  if (!d.lib) { error_ = std::string("dlopen libwvcdm_shared.so: ") + dlerror(); return false; }
+  if (!d.lib) d.lib = dlopen("libwidevine-wrapper.so.1", RTLD_NOW);
+  if (!d.lib) { error_ = std::string("no Widevine CDM wrapper: ") + dlerror(); return false; }
   auto init_module = reinterpret_cast<void (*)()>(dlsym(d.lib, "InitializeCdmModule_10"));
   auto create = reinterpret_cast<void *(*)(int, const char *, uint32_t, GetCdmHostFunc, void *)>(
       dlsym(d.lib, "CreateCdmInstance"));

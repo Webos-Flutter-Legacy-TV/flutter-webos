@@ -71,7 +71,14 @@ Built and checked on a PC with public streams, not yet on the TV: VP9, AV1,
 Dolby Vision, E-AC-3/AC-3/Opus, HDR metadata, live DASH and seeking, key
 rotation, adaptive quality switching. Not supported: in-stream subtitles (no
 renderer on this route; use Flutter's `closedCaptionFile`), HLS, PlayReady on
-this route, live period changes. webOS 3-5 and 7+ are untested.
+this route, live period changes.
+
+Other webOS releases are untested on a TV. Firmware symbol check (webosbrew
+inventory 0.10.0): webOS 5, 22 and 23 have every library and function the
+route uses (webOS 5 lacks `changeAudioCodec`: no audio switch between
+codecs); webOS 24 to 26 name the CDM wrapper `libwidevine-wrapper.so.1`
+(loaded as a fallback); webOS 4 and older have an older CDM interface, and
+webOS 3 an older player ABI (unsupported).
 
 ### Showing the picture
 
