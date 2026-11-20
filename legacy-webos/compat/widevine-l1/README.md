@@ -79,11 +79,17 @@ periods.
 Checked on the TV with streams made locally (`tools/l1-test-media.sh`, served
 by `tools/media-server.sh`; drm_test cases `l1local_*`, built with
 `--dart-define=MEDIA_BASE=http://<host>:8099`): VP9 with Opus, H.264 with
-AC-3 5.1, HEVC HDR10 with `mdcv`/`clli` (sent with `setHdrInfo`), and
+AC-3 5.1, HEVC HDR10 with `mdcv`/`clli` (sent with `setHdrInfo`),
 adaptive quality switching (three H.264 qualities; with `slownet` it drops
-from 1080p to 480p).
+from 1080p to 480p), Dolby Vision Profile 8.1 (the HDR10 test stream with a
+static RPU from dovi_tool's test assets in every frame and a `dvcC` box: the
+TV reports `hdrType` DolbyVision and switches to its Dolby Vision picture
+mode), and Sol Levante (Netflix open content, from Hybrik's public samples)
+as HEVC HDR10 with E-AC-3 Atmos (the TV reports HDR10 and Atmos). The TV's
+HDR state during playback: `luna://com.webos.service.videooutput/getStatus`
+(`videoInfo.hdrType`).
 
-Built and checked on a PC only: Dolby Vision, key rotation. Not supported: in-stream subtitles (no
+Built and checked on a PC only: key rotation. Not supported: in-stream subtitles (no
 renderer on this route; use Flutter's `closedCaptionFile`), HLS, PlayReady on
 this route, live period changes.
 

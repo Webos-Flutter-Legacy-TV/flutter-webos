@@ -7,7 +7,10 @@ them here: colr nclx BT.2020 / PQ / BT.2020 NCL, limited range, and the
 values given to x265 (P3-D65 primaries, 1000 cd/m2 down to 0.0001; MaxCLL
 1000, MaxFALL 400). Boxes already present are left alone.
 
-  mp4-hdr-boxes.py <init.mp4>
+With --dv81 it also adds a Dolby Vision configuration ('dvcC'): Profile 8,
+level 4 (1080p30), RPU and base layer, HDR10-compatible base layer (ID 1).
+
+  mp4-hdr-boxes.py [--dv81] <init.mp4>
 """
 import struct
 import sys
@@ -20,8 +23,14 @@ def box(kind, payload):
     return struct.pack(">I", 8 + len(payload)) + kind + payload
 
 
+DV81 = False
+
+
 def hdr_boxes(existing):
     out = b""
+    if DV81 and b"dvcC" not in existing:
+        flags = (8 << 9) | (4 << 3) | (1 << 2) | 1  # profile, level, rpu, (no el), bl
+        out += box(b"dvcC", bytes([1, 0]) + struct.pack(">H", flags) + bytes([1 << 4]) + bytes(19))
     if b"colr" not in existing:
         out += box(b"colr", b"nclx" + struct.pack(">HHHB", 9, 16, 9, 0))
     if b"mdcv" not in existing:
@@ -63,7 +72,12 @@ def walk(data, start, end):
 
 
 def main():
-    path = sys.argv[1]
+    global DV81
+    args = sys.argv[1:]
+    if args and args[0] == "--dv81":
+        DV81 = True
+        args = args[1:]
+    path = args[0]
     data = open(path, "rb").read()
     new = walk(data, 0, len(data))
     if new != data:

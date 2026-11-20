@@ -76,6 +76,8 @@ const cases = <Case>[
   Case('l1local_ac3', '$_media/l1/h264_ac3/manifest.mpd', VideoFormat.dash),
   Case('l1local_hdr10', '$_media/l1/hevc_hdr10/manifest.mpd', VideoFormat.dash),
   Case('l1local_abr', '$_media/l1/abr_h264/manifest.mpd', VideoFormat.dash),
+  Case('l1local_sol_atmos', '$_media/l1/sol_hdr10_atmos/manifest.mpd', VideoFormat.dash),
+  Case('l1local_dv81', '$_media/l1/dv_p81/manifest.mpd', VideoFormat.dash),
   Case('playready_smooth',
       'https://test.playready.microsoft.com/smoothstreaming/SSWSS720H264PR/SuperSpeedway_720.ism/Manifest',
       VideoFormat.ss,

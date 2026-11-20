@@ -65,4 +65,47 @@ make abr_h264 -filter_complex \
 
 python3 "$FW/tools/mp4-hdr-boxes.py" "$OUT/hevc_hdr10/init-0.mp4"
 
+# Dolby Vision Profile 8.1: the HDR10 stream above, without B-frames and with
+# access unit delimiters, plus a static RPU in every access unit (dovi_tool's
+# test asset mel_to_81.bin, MIT) and a dvcC box.
+RPU="$FW/downloads/media/src/mel_to_81.bin"
+[ -s "$RPU" ] || curl -fsSL https://raw.githubusercontent.com/quietvoid/dovi_tool/main/assets/tests/mel_to_81.bin -o "$RPU" ||
+  echo "  mel_to_81.bin: download failed" >&2
+if [ -s "$RPU" ] && [ ! -s "$OUT/dv_p81/manifest.mpd" ]; then
+  echo "  dv_p81"
+  mkdir -p "$OUT/dv_p81"
+  T="$OUT/dv_p81/.tmp"; mkdir -p "$T"
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i "testsrc=size=1920x1080:rate=30:duration=$SECS" \
+    -vf format=yuv420p10le -c:v libx265 -preset fast -b:v 5M \
+    -x265-params "log-level=error:keyint=60:min-keyint=60:scenecut=0:bframes=0:aud=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:hdr10=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400" \
+    -f hevc "$T/bl.hevc"
+  python3 "$FW/tools/hevc-add-rpu.py" "$T/bl.hevc" "$RPU" "$T/dv.hevc"
+  ffmpeg -hide_banner -loglevel error -y -r 30 -f hevc -i "$T/dv.hevc" -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=$SECS" \
+    -map 0:v -map 1:a -c:v copy -tag:v hvc1 -c:a aac -b:a 128k -ac 2 \
+    "${DASH[@]}" -use_timeline 0 -adaptation_sets "id=0,streams=v id=1,streams=a" "$OUT/dv_p81/manifest.mpd"
+  python3 "$FW/tools/mp4-hdr-boxes.py" --dv81 "$OUT/dv_p81/init-0.mp4"
+  rm -rf "$T"
+fi
+
+# Real content: Sol Levante (Netflix open content, CC BY 4.0) from Hybrik's
+# public sample sources, HEVC Main 10 HDR10 1080p with E-AC-3 + Atmos (JOC),
+# repackaged without re-encoding (key frames every 6 s: 6 s segments). The
+# file has HDR10 mastering SEI but leaves its VUI colour unspecified, so the
+# TV would show it as SDR: hevc_metadata sets BT.2020 / PQ.
+SRC_DIR="$FW/downloads/media/src"
+HY=https://hybrik-examples.s3.amazonaws.com/public/sources/short_adaptive_bitrate_sources/sol_levante
+mkdir -p "$SRC_DIR"
+for f in SolLevante_FHD_HDR10.mp4 SolLevante_DDPJOC_lo.mp4; do
+  [ -s "$SRC_DIR/$f" ] || curl -fsSL "$HY/$f" -o "$SRC_DIR/$f" || echo "  $f: download failed" >&2
+done
+if [ -s "$SRC_DIR/SolLevante_FHD_HDR10.mp4" ] && [ -s "$SRC_DIR/SolLevante_DDPJOC_lo.mp4" ] &&
+   [ ! -s "$OUT/sol_hdr10_atmos/manifest.mpd" ]; then
+  echo "  sol_hdr10_atmos"
+  mkdir -p "$OUT/sol_hdr10_atmos"
+  ffmpeg -hide_banner -loglevel error -y -i "$SRC_DIR/SolLevante_FHD_HDR10.mp4" -i "$SRC_DIR/SolLevante_DDPJOC_lo.mp4" \
+    -map 0:v -map 1:a -c copy -bsf:v hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9 \
+    "${DASH[@]}" -seg_duration 6 -use_timeline 1 \
+    -adaptation_sets "id=0,streams=v id=1,streams=a" "$OUT/sol_hdr10_atmos/manifest.mpd"
+fi
+
 echo "== done; serve with tools/media-server.sh (paths l1/<name>/manifest.mpd)"
