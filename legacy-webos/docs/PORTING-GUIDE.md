@@ -62,6 +62,7 @@ Optional, as empty files in `webos/meta/`:
 | File | Effect |
 | --- | --- |
 | `compat-widevine-cdm` | Widevine playback through the TV's own CDM (see README, opt-in, L3) |
+| `compat-widevine-l1` | Widevine at the hardware security level through the TV's own CDM and player (see README, opt-in, experimental) |
 | `compat-back-as-key` | Deliver Back as a key event instead of a route pop |
 | `compat-dual-surface` | Faster frames (removes a ~10 ms driver wait per frame); off automatically while media is loaded or an external texture is registered |
 | `compat-log-*`, `compat-swap0` | Debug output, see README |
@@ -84,7 +85,7 @@ dependencies:
 | Plugin | On webOS 6 |
 | --- | --- |
 | `video_player` | Use the fork: fixes looping, lifecycle events and volume |
-| `video_player_drm` | Use the fork: fixes error handling. PlayReady works; Widevine needs `compat-widevine-cdm` |
+| `video_player_drm` | Use the fork: fixes error handling. PlayReady works; Widevine needs `compat-widevine-cdm` or `compat-widevine-l1` |
 | `flutter_secure_storage` | Use the fork: webOS 6 has no usable key service; the fork encrypts in the app sandbox |
 | `webos_service_bridge` | Use the fork: fixes subscription cancel errors |
 | `audioplayers`, `gamepads`, `webos_image_texture`, `webos_app_manager`, `webos_display`, `connectivity_plus`, `package_info_plus`, `path_provider`, `shared_preferences`, `sqflite`, `url_launcher`, `custom_mouse_cursor`, `flutter_keyboard_visibility` | Work unchanged |

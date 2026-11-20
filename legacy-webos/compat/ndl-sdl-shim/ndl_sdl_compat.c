@@ -508,6 +508,9 @@ static struct {
   int (*select)(const char *, int);
 } l1;
 static int l1_active(void) { return g_l1_slot >= 0 && g_l1_slot == g_cur_slot; }
+// For the Wayland shim: an L1 player is loaded (its video is under the UI,
+// so the app must redraw whole frames; see compat/wayland-shim).
+EXPORT int compat_l1_active(void) { return g_l1_slot >= 0; }
 static void l1_emit(void *user, const char *json) {
   int slot = (int)(intptr_t)user;
   char *m = strdup(json);

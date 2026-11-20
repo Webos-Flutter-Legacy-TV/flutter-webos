@@ -45,6 +45,9 @@ const cases = <Case>[
   Case('widevine_uhd_hevc', 'https://storage.googleapis.com/wvmedia/cenc/hevc/tears/tears_uhd.mpd',
       VideoFormat.dash,
       DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://proxy.uat.widevine.com/proxy?provider=widevine_test')),
+  Case('widevine_uhd_long', 'https://storage.googleapis.com/wvmedia/cenc/hevc/tears/tears_uhd.mpd',
+      VideoFormat.dash,
+      DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://proxy.uat.widevine.com/proxy?provider=widevine_test')),
   Case('widevine_audio_switch',
       'https://storage.googleapis.com/shaka-demo-assets/angel-one-widevine/dash.mpd',
       VideoFormat.dash,
@@ -167,6 +170,20 @@ class _DrmPageState extends State<DrmPage> {
           await Future.delayed(const Duration(seconds: 8));
           log('period 2: position ${c.value.position.inMilliseconds}ms');
           log('STEP multiperiod_done');
+        }
+        if (k.name == 'widevine_uhd_long') {
+          // 4K for three minutes: a 10 s window advancing less than 8 s is
+          // a stall (segment downloads not keeping up).
+          var stalls = 0;
+          var last = c.value.position.inMilliseconds;
+          for (var i = 0; i < 18; i++) {
+            await Future.delayed(const Duration(seconds: 10));
+            final now = c.value.position.inMilliseconds;
+            if (now - last < 8000) stalls++;
+            log('long: ${now}ms (+${now - last}ms)');
+            last = now;
+          }
+          log('STEP long_done stalls=$stalls');
         }
         if (k.name == 'widevine_audio_switch') {
           // Multi-language stream: list the audio tracks, switch to the

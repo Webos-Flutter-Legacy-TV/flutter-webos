@@ -7,6 +7,24 @@ tag on both.
 
 ## Unreleased
 
+- Hardware (L1) Widevine on older webOS (opt-in `compat-widevine-l1`,
+  experimental): `compat/widevine-l1` plays Widevine DASH through the TV's
+  CDM wrapper and its StarfishMediaAPIs player on the secure video path, as
+  LG's YouTube app does. Verified on webOS 6.5.3 with the picture on screen:
+  1080p and 4K H.264 and HEVC with audio, licence by URL and by callback,
+  seeking, audio track switching, 3 minutes of 4K HEVC without stalls. VP9,
+  AV1, Dolby Vision, HDR10, E-AC-3/AC-3/Opus, live DASH, several periods and
+  keys and adaptive quality are built but not yet checked on a TV.
+- Wayland shim: while an L1 player is loaded, report EGL buffer age 0 so the
+  embedder redraws whole frames (its partial redraw left the video widget's
+  transparent hole in one buffer only); exports `compat_request_frame()` for
+  the player to redraw after the TV applies the video area. NDL playback is
+  unchanged: video_test 11/11 with the new shims.
+- drm_test: L1 cases `widevine_uhd_h264`, `widevine_hevc`,
+  `widevine_uhd_hevc`, `widevine_uhd_long`, `widevine_audio_switch`,
+  `widevine_multiperiod` (Axinom's licence server currently refuses the
+  published test token).
+
 - webOS 3 (opt-in `COMPAT_WEBOS3=1`, untested on a TV): adds to the webOS 4
   extras a `libluna-service2++` built from webOS OSE (LG's embedder needs the
   newer `LS::Call`), `libwebos3-compat` (ResBundle with the C++11 string ABI,

@@ -165,6 +165,36 @@ Google ship it under, and the device certificate could be revoked. Use at your
 own risk. `compat/widevine/out/wv-selftest` (built by `build-shims.sh`) checks
 the CDM, provisioning and a licence round trip from inside an app's jail.
 
+## Hardware Widevine (L1) on older webOS (opt-in, experimental)
+
+Add an empty `webos/meta/compat-widevine-l1` to the app (checked before
+`compat-widevine-cdm`). Widevine DASH loads from `video_player_drm` (licence
+URL or `licenseCallback`) then play through `libwv-l1.so`
+(`compat/widevine-l1/`) at the hardware security level, the way LG's YouTube
+app does:
+
+1. the TV's Widevine CDM wrapper (`/usr/lib/libwvcdm_shared.so`) gets the
+   licence and wraps each video sample for the secure video path (the video
+   is decrypted in the TEE, never in the app);
+2. the TV's player library (`StarfishMediaAPIs`) decodes it in the app's
+   process; `libwv-l1` reads the DASH manifest and MP4 segments, feeds the
+   samples and sends the plugin the events NDL would;
+3. the player places its video with the video output service and asks for a
+   redraw once the TV has applied it; the Wayland shim redraws whole frames
+   while media is loaded, so the video widget's transparent hole reaches the
+   screen.
+
+Verified on webOS 6.5.3 (LG C1), picture on screen: 1080p and 4K H.264 and
+HEVC with audio, licence by URL and by callback, seeking, audio track
+switching, 3 minutes of 4K HEVC at 20 Mbit/s without stalls. Built but not yet
+checked on a TV: VP9, AV1, Dolby Vision, HDR10, E-AC-3/AC-3/Opus, live DASH,
+several periods and keys, adaptive quality. Not supported: in-stream
+subtitles, HLS. Details, debug options and status:
+[compat/widevine-l1/README.md](compat/widevine-l1/README.md).
+
+The same caution as for the software route applies: this uses the TV's CDM
+outside the terms it ships under.
+
 ## Other webOS releases (paper check)
 
 `tools/fw-compat-check.py` checks, against webosbrew's firmware symbol

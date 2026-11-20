@@ -779,13 +779,20 @@ unsigned int eglQuerySurface(void *dpy, void *surf, int attr, int *value) {
   if (ok && attr == 0x313D /* EGL_BUFFER_AGE_EXT */ && value) {
     int raw = *value;
     *value = dual_buffer_age(surf, mapped, raw);
-    // While media is loaded, report "unknown" (0): the embedder then redraws
-    // the whole frame. Its partial redraw trusts the age, and with Mali's
-    // the transparent hole a video widget leaves over the video plane was in
-    // one buffer only: the next frame on another buffer put the black back
-    // (seen with the in-process L1 Widevine player, whose video is under
-    // the UI; NDL's is drawn above it). Redraws are rare during playback.
-    if (dual_media_active()) *value = 0;
+    // While an L1 Widevine player is loaded (NDL shim), report "unknown"
+    // (0): the embedder then redraws the whole frame. Its partial redraw
+    // trusts the age, and with Mali's the transparent hole the video widget
+    // leaves over that player's video plane (under the UI) was in one buffer
+    // only: the next frame on another buffer put the black back. Not for NDL
+    // players: their video is drawn above the UI, and full redraws there
+    // disturbed playback-rate changes (video_test speed.back_to_1x).
+    static int (*l1_active)(void);
+    static int l1_looked;
+    if (!l1_looked) {
+      l1_looked = 1;
+      l1_active = (int (*)(void))dlsym(RTLD_DEFAULT, "compat_l1_active");
+    }
+    if (l1_active && l1_active()) *value = 0;
     static int logged;
     if (wait_on() && logged < 12) {
       logged++;
