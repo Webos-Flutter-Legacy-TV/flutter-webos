@@ -137,7 +137,9 @@ Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
   release arrives only with the vblank and is read only by the Mali driver
   inside `eglMakeCurrent`, so holding vsync just adds latency (#4).
 
-## Hardware Widevine (L1) on older webOS (opt-in, experimental)
+## Hardware Widevine (L1) on older webOS (opt-in, experimental, research only)
+
+Not for published apps: see the warning at the end of this section.
 
 Add an empty `webos/meta/compat-widevine-l1` to the app. Widevine DASH loads from `video_player_drm` (licence
 URL or `licenseCallback`) then play through `libwv-l1.so`
@@ -165,12 +167,26 @@ rotation, several keys across periods. Not supported: in-stream subtitles,
 HLS, period changes in live streams. Details, debug options and status:
 [compat/widevine-l1/README.md](compat/widevine-l1/README.md).
 
-Content protection stays in place: video is decrypted only in the TV's secure
-hardware, and nothing decrypted leaves the player (audio is decrypted by the
-CDM and handed straight to the player, as in LG's own apps). It does use the
-TV's CDM and player library outside the terms LG and Google ship them under,
-and the device certificate could be revoked: don't enable it in a published
-app without legal advice.
+> **Research use only. Do not ship this in a published app.**
+>
+> - **Not licensed.** It uses the TV's Widevine CDM and LG's player
+>   library from an app that neither Google nor LG has licensed to use
+>   them. That is outside Google's Widevine licensing and very likely
+>   outside the TV's software terms.
+> - **Studio contracts.** Services that carry studio content usually
+>   have to use certified clients, so shipping this can also break
+>   their content contracts.
+> - **Revocation.** Google can revoke the TV's Widevine device
+>   certificate. That would break Widevine in every app on that TV.
+> - **Untested in law.** Whether using or distributing it is lawful
+>   (for example under DMCA section 1201) has not been tested in court.
+> - **What it does keep:** content protection. Video is decrypted only
+>   in the TV's secure hardware, and nothing decrypted leaves the
+>   player. Audio is decrypted by the CDM and handed straight to the
+>   player, as in LG's own apps.
+>
+> Use it only to test on your own TV, with content you are entitled to
+> play. Get legal advice before anything else.
 
 An earlier software route (`compat-widevine-cdm`, L3) was removed on
 21 November 2026: it decrypted the media inside the app and served it clear

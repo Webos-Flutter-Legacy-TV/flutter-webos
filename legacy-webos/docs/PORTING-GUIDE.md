@@ -61,7 +61,7 @@ Optional, as empty files in `webos/meta/`:
 
 | File | Effect |
 | --- | --- |
-| `compat-widevine-l1` | Widevine at the hardware security level through the TV's own CDM and player (see README, opt-in, experimental) |
+| `compat-widevine-l1` | Widevine at the hardware security level through the TV's own CDM and player (see README; opt-in, experimental, research only: not for published apps) |
 | `compat-back-as-key` | Deliver Back as a key event instead of a route pop |
 | `compat-dual-surface` | Faster frames (removes a ~10 ms driver wait per frame); off automatically while media is loaded or an external texture is registered |
 | `compat-log-*`, `compat-swap0` | Debug output, see README |
@@ -130,5 +130,12 @@ the app's stdout and stderr and the shims' messages.
   LG accepts the repackaged runtime is unknown.
 - The package bundles glibc (LGPL) and the GCC runtime (GPL with the runtime
   exception); see the README's licensing section for what to ship.
-- The Widevine route uses the TV's CDM outside the terms it ships under. Do
-  not enable it in a published app without legal advice.
+- **Do not ship `compat-widevine-l1` in a published app.**
+  - It uses the TV's Widevine CDM and player library without a licence
+    from Google or LG.
+  - Studio-licensed services are usually required to use certified
+    clients.
+  - Google can revoke the TV's Widevine device certificate.
+  - Its legal status (for example under DMCA section 1201) is untested.
+  - It is for research on your own TV only; get legal advice first. See
+    the README.
