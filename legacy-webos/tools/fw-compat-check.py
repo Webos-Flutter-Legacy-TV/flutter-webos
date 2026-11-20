@@ -43,7 +43,7 @@ import sys
 BUNDLED = re.compile(r"^(ld-linux\.so\.3|libc\.so\.6|libm\.so\.6|libpthread\.so\.0|libdl\.so\.2|"
                      r"librt\.so\.1|libresolv\.so\.2|libutil\.so\.1|libanl\.so\.1|libstdc\+\+\.so\.6|"
                      r"libgcc_s\.so\.1|libatomic\.so\.1|libflutter_.*|libapp\.so|lib.*_plugin\.so|"
-                     r"libwl-marshal-flags-shim\.so|libwebos-foreign-compat\.so|libwv-compat\.so|libwv-l1\.so)$")
+                     r"libwl-marshal-flags-shim\.so|libwebos-foreign-compat\.so|libwv-l1\.so)$")
 # libraries legacy-webos may satisfy with either of several system sonames
 # (libwayland-egl.so.1 is a bundled forwarder to .so.1 or .so.0)
 ALTERNATIVES = {"libwayland-egl.so.1": ["libwayland-egl.so.1", "libwayland-egl.so.0"]}

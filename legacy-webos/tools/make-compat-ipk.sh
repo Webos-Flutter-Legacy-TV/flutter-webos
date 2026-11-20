@@ -87,10 +87,10 @@ if grep -l "libNDL_media.so" "$STAGE"/lib/*.so >/dev/null 2>&1; then
   cp "$FW/compat/ndl-sdl-shim/out/libSDL2-2.0.so.0" "$STAGE/lib/compat/"
   "$PATCHELF" --add-needed libSDL2-2.0.so.0 "$EXE"
 fi
-# Opt-in Widevine CDM proxy: only when the app ships webos/meta/compat-widevine-cdm.
+# The software Widevine route (compat-widevine-cdm) was removed: it decrypted
+# media in the app and served it clear on 127.0.0.1.
 if [ -e "$STAGE/compat-widevine-cdm" ]; then
-  [ -e "$FW/compat/widevine/out/libwv-compat.so" ] || { echo "libwv-compat.so not built (needs the LG NDK)" >&2; exit 1; }
-  cp "$FW/compat/widevine/out/libwv-compat.so" "$STAGE/lib/compat/"
+  echo "warning: compat-widevine-cdm is no longer supported (removed); use compat-widevine-l1" >&2
 fi
 # Opt-in hardware Widevine player (secure video path): webos/meta/compat-widevine-l1.
 if [ -e "$STAGE/compat-widevine-l1" ]; then

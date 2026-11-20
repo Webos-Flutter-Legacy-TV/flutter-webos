@@ -242,7 +242,7 @@ class _DrmPageState extends State<DrmPage> {
           log('STEP audio_switch_done');
         }
         if (k.name == 'widevine_seek') {
-          // Seek through the proxy, then keep playing so the adaptive logic
+          // Seek, then keep playing so the adaptive logic
           // can switch bitrates (watch videoInfo events in compat.log).
           await Future.delayed(const Duration(seconds: 5));
           log('seek from ${c.value.position.inMilliseconds}ms to 300000ms');

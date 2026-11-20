@@ -29,7 +29,7 @@
 #include <thread>
 #include <vector>
 
-#include "../widevine/wv_cdm.h"  // HTTP helpers
+#include "http.h"
 #include "dash.h"
 #include "fmp4.h"
 #include "l1_cdm.h"
@@ -531,9 +531,9 @@ class Player {
     std::string range, cr, ct;
     if (s.first >= 0) range = std::to_string(s.first) + "-" + std::to_string(s.last);
     for (int attempt = 0; attempt < 3; attempt++) {
-      long http = wvcompat::Host::httpGet(s.url, range, out, &cr, &ct);
-      if (http == 200 || http == 206) return true;
-      logf("GET %s [%s]: HTTP %ld", s.url.c_str(), range.c_str(), http);
+      long code = http::get(s.url, range, out, &cr, &ct);
+      if (code == 200 || code == 206) return true;
+      logf("GET %s [%s]: HTTP %ld", s.url.c_str(), range.c_str(), code);
       if (quit()) return false;
     }
     return false;
@@ -590,9 +590,9 @@ class Player {
   bool exchange(const std::string &request, std::string *reply, const char *what) {
     std::string lic_url = jsonValue(option_, "licenseUrl");
     if (!lic_url.empty()) {
-      long http = wvcompat::Host::httpPost(lic_url, request, "application/octet-stream", reply);
-      if (http == 200) return true;
-      fail(std::string(what) + ": licence server HTTP " + std::to_string(http));
+      long code = http::post(lic_url, request, "application/octet-stream", reply);
+      if (code == 200) return true;
+      fail(std::string(what) + ": licence server HTTP " + std::to_string(code));
       return false;
     }
     std::string session = "wvl1-" + std::to_string(++request_no_);
@@ -891,7 +891,7 @@ class Player {
   bool refreshLive(Manifest *man) {
     std::string mpd, cr, ct, err;
     Manifest fresh;
-    if (wvcompat::Host::httpGet(url_, "", &mpd, &cr, &ct) != 200 || !parseMpd(mpd, url_, &fresh, &err, nowUtc())) {
+    if (http::get(url_, "", &mpd, &cr, &ct) != 200 || !parseMpd(mpd, url_, &fresh, &err, nowUtc())) {
       logf("live manifest refresh failed %s", err.c_str());
       return false;
     }
@@ -951,7 +951,7 @@ class Player {
   void run() {
     clear_ = option_.find("\"drm\":{") == std::string::npos;
     std::string mpd, cr, ct, err;
-    if (wvcompat::Host::httpGet(url_, "", &mpd, &cr, &ct) != 200) { fail("manifest download failed"); return; }
+    if (http::get(url_, "", &mpd, &cr, &ct) != 200) { fail("manifest download failed"); return; }
     Manifest man;
     if (!parseMpd(mpd, url_, &man, &err, nowUtc())) { fail(err); return; }
     live_ = man.dynamic;

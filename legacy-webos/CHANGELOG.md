@@ -12,9 +12,18 @@ tag on both.
   CDM wrapper and its StarfishMediaAPIs player on the secure video path, as
   LG's YouTube app does. Verified on webOS 6.5.3 with the picture on screen:
   1080p and 4K H.264 and HEVC with audio, licence by URL and by callback,
-  seeking, audio track switching, 3 minutes of 4K HEVC without stalls. VP9,
-  AV1, Dolby Vision, HDR10, E-AC-3/AC-3/Opus, live DASH, several periods and
-  keys and adaptive quality are built but not yet checked on a TV.
+  seeking, audio track switching, 3 minutes of 4K HEVC without stalls; with
+  clear test streams through the same player, AV1, VP9, Dolby Vision 8.1,
+  HDR10, AC-3, E-AC-3 with Atmos, Opus, live DASH, several periods and
+  adaptive quality. Key rotation is not yet checked on a TV.
+- Removed the software Widevine route (`compat-widevine-cdm`, `libwv-compat`,
+  `wv-selftest`): it decrypted media inside the app and served it clear on
+  `127.0.0.1`, which works against the content protection. Widevine now
+  plays only through the hardware route, where video is decrypted in the
+  TV's secure hardware. Apps that still ship `compat-widevine-cdm` get a
+  packaging warning and play Widevine through NDL (which refuses it on
+  webOS 6). Also removed `l1-selftest`, an early probe that printed
+  decrypted sample bytes.
 - Wayland shim: while an L1 player is loaded, report EGL buffer age 0 so the
   embedder redraws whole frames (its partial redraw left the video widget's
   transparent hole in one buffer only); exports `compat_request_frame()` for

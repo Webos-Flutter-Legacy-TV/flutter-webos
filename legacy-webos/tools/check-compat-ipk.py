@@ -195,8 +195,6 @@ def main():
             bad(f"{main_rel}: libSDL2-2.0.so.0 (media shim) not a direct NEEDED entry")
 
     # Opt-in Widevine.
-    if "compat-widevine-cdm" in app and "libwv-compat.so" not in compat:
-        bad("compat-widevine-cdm is set but lib/compat/libwv-compat.so is missing")
     if "compat-widevine-l1" in app and "libwv-l1.so" not in compat:
         bad("compat-widevine-l1 is set but lib/compat/libwv-l1.so is missing")
 
@@ -239,7 +237,7 @@ def main():
     # Every bundled library a bundled ELF names must be present: a name that is
     # in lib/compat for one ELF but missing for another is a packaging slip.
     for n in sorted({n for e in everything for n in e.needed}):
-        bundled_name = n in ALWAYS or n in ("libSDL2-2.0.so.0", "libwebos-foreign-compat.so", "libwv-compat.so", "libwv-l1.so",
+        bundled_name = n in ALWAYS or n in ("libSDL2-2.0.so.0", "libwebos-foreign-compat.so", "libwv-l1.so",
                                             "libwebos3-compat.so")
         if bundled_name and n not in compat and n not in libs:
             bad(f"{n} is needed but not bundled")

@@ -22,7 +22,7 @@ Developer Mode:
 | url_launcher (opens the TV browser), webos_image_texture | Works |
 | gamepads, flutter_keyboard_visibility, custom_mouse_cursor | Work (API calls; no gamepad attached) |
 | flutter_secure_storage | Works via app-sandbox AES-GCM fallback (no system keystore on webOS 6; see Known issues) |
-| video_player_drm | Clear HLS/DASH and PlayReady (licence URL) play; Widevine plays with the opt-in CDM proxy (software security level) |
+| video_player_drm | Clear HLS/DASH and PlayReady (licence URL) play; Widevine plays with the opt-in hardware route (`compat-widevine-l1`, experimental) |
 | audioplayers_soloud | Works with plugins fork fixes (2026-11-18): WAV/MP3/Opus from asset, bytes, file and URL; pause, seek, 2x, volume/balance, completion, replay, three players mixed, low-latency retrigger. Output reaches the TV's ALSA hardware sink through PulseAudio. Open: in loop mode the reported position stays at the last seek target after wrapping (`tests/soloud_test`, 21/22) |
 | Not tested | flutterfire |
 | Performance | 50-60 fps for lists and light UI with Impeller; heavy shadow/opacity grids are slow |
@@ -48,7 +48,7 @@ order, everything that stopped it from starting on webOS 6:
 | The Mali driver gives each window two buffers and the compositor returns the shown one only once the next is on screen, so `eglMakeCurrent` blocks ~10 ms per frame, leaving ~7 ms to render | Opt-in (`compat-dual-surface`): the shim gives the window a second EGL surface on the same Wayland surface and alternates frames (four buffers), converting Mali's per-surface buffer age for the embedder's partial redraw, and uses the window's own surface while media is loaded. See "Renderer and frame rate" for the known issue |
 | NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its window from SDL, even for audio | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window, or a placeholder for audio-only players (added when any bundled library links `libNDL_media`) |
 | `drm.licenseUrl` in the load request (webOS 26) is ignored; old releases use a DRM client (`com.webos.service.drm`) | NDL shim translates it: `NDL_MediaDRMLoad`, `NDL_MediaDRMSendMessage` with a `PlayReadyInitiator` (`LA_URL`), then loads with `drm.clientId`; unloads the client at exit |
-| `NDL_MediaSetDrmOperation` missing (video_player_drm, `-z now`) | NDL shim exports it: licence responses for the opt-in Widevine proxy, failure otherwise |
+| `NDL_MediaSetDrmOperation` missing (video_player_drm, `-z now`) | NDL shim exports it: licence responses for the opt-in hardware Widevine route, failure otherwise |
 | libwebp < 1.1 lacks `WebPMalloc` (webos_image_texture, linked `-z now`, so the app would not start) | Wayland shim also exports `WebPMalloc` |
 
 The video_player fixes that are not webOS-6 specific (loop position,
@@ -137,38 +137,9 @@ Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
   release arrives only with the vblank and is read only by the Mali driver
   inside `eglMakeCurrent`, so holding vsync just adds latency (#4).
 
-## Widevine on older webOS (opt-in)
-
-Add an empty `webos/meta/compat-widevine-cdm` to the app. When the app loads a
-Widevine DASH stream (with `licenseServerUrl` or `licenseCallback`), the NDL
-shim hands it to `libwv-compat.so` (`compat/widevine/`), which:
-
-1. loads the TV's own Widevine CE CDM (`/usr/lib/libwidevine_ce_cdm_shared.so`),
-   provisions the device once (certificate kept in the app's data folder) and
-   gets the licence: from `licenseServerUrl`, or, with `licenseCallback`, by
-   sending the challenge to the app as the `drmEncrypted` event webOS 26 NDL
-   sends and taking the licence back from `NDL_MediaSetDrmOperation`;
-2. runs a proxy on `127.0.0.1` that serves the manifest without
-   `ContentProtection` and decrypts each requested byte range of the media
-   files in place (CENC `cenc`/`cbcs`; boxes are renamed, never resized, so
-   byte ranges stay valid);
-3. gives the media pipeline the local URL, so it plays a clear stream.
-
-Verified on webOS 6.5.3 with Google's Widevine test stream: licence by URL and
-by `licenseCallback`, seeking (resumes after ~4 s, as with clear streams) and
-adaptive switching from 240p to 720p (8 Mbit/s) with no decrypt failures.
-
-Limits: software security level (L3), so services that require hardware
-security cap quality or refuse; Widevine DASH only (encrypted HLS is not
-handled). Using the TV's provisioned CDM this way is outside the terms LG and
-Google ship it under, and the device certificate could be revoked. Use at your
-own risk. `compat/widevine/out/wv-selftest` (built by `build-shims.sh`) checks
-the CDM, provisioning and a licence round trip from inside an app's jail.
-
 ## Hardware Widevine (L1) on older webOS (opt-in, experimental)
 
-Add an empty `webos/meta/compat-widevine-l1` to the app (checked before
-`compat-widevine-cdm`). Widevine DASH loads from `video_player_drm` (licence
+Add an empty `webos/meta/compat-widevine-l1` to the app. Widevine DASH loads from `video_player_drm` (licence
 URL or `licenseCallback`) then play through `libwv-l1.so`
 (`compat/widevine-l1/`) at the hardware security level, the way LG's YouTube
 app does:
@@ -194,8 +165,16 @@ rotation, several keys across periods. Not supported: in-stream subtitles,
 HLS, period changes in live streams. Details, debug options and status:
 [compat/widevine-l1/README.md](compat/widevine-l1/README.md).
 
-The same caution as for the software route applies: this uses the TV's CDM
-outside the terms it ships under.
+Content protection stays in place: video is decrypted only in the TV's secure
+hardware, and nothing decrypted leaves the player (audio is decrypted by the
+CDM and handed straight to the player, as in LG's own apps). It does use the
+TV's CDM and player library outside the terms LG and Google ship them under,
+and the device certificate could be revoked: don't enable it in a published
+app without legal advice.
+
+An earlier software route (`compat-widevine-cdm`, L3) was removed on
+21 November 2026: it decrypted the media inside the app and served it clear
+on `127.0.0.1`, which works against the content protection.
 
 ## Other webOS releases (paper check)
 
@@ -210,7 +189,7 @@ real TVs are still needed. Result (inventory 0.10.0, Oct 2026):
 | 26 (11.2) | nothing | 17.1 | LG's own target |
 | 22-25 (7.4-10.2) | nothing | 16.4 / 17.1 | should work as is (CDM 17 untested) |
 | 6 (6.4) | nothing | 16.3 | verified on 6.5.3 |
-| 5 (5.3.1) | nothing (`NDL_MediaSetPlayer` shimmed: single player) | 15.1 | likely works; Widevine proxy needs the v15 CDM interface |
+| 5 (5.3.1) | nothing (`NDL_MediaSetPlayer` shimmed: single player) | 15.1 | likely works |
 | 4 (4.4.2, 4.10) | nothing with `COMPAT_WEBOS4=1` (see below); without it `libsystemd.so.0`, `libcurl.so.4` and the `wl_webos_foreign` protocol | -, 14.0 | starts on paper; no video placement; untested on a TV |
 | 3 (3.4, 3.9) | nothing with `COMPAT_WEBOS3=1` (see below); without it as webOS 4, plus older Luna C++, i18n and pbnjson APIs, Wayland < 1.10, no `libudev.so.1`/libwebp | - | starts on paper; no video placement; untested on a TV |
 | 2 (2.2) | with `COMPAT_WEBOS3=1`: nothing for apps without media plugins. Media and image plugins use pbnjson's C++ API, and webOS 2's pbnjson 2.9 predates `JResult`, so its `JValue` has another layout: they need a newer pbnjson bundled (not done) | - | core app starts on paper; untested on a TV |
@@ -361,10 +340,10 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
   patched plugin in Webos-Flutter-Legacy-TV/plugins detects this and
   encrypts with AES-256-GCM using a key in the app's private data folder
   (mode 0600): safe from other apps, not from root on the TV.
-- **Widevine (video_player_drm) needs the opt-in CDM proxy on webOS 6.** The
-  URL pipeline cannot do Widevine Modular (LG supports it there only through
-  MSE/EME with an in-app CDM; every load-option form ends in
-  `552 Encrypted Content`). See "Widevine on older webOS" above.
+- **Widevine (video_player_drm) needs the opt-in hardware route on webOS 6.**
+  The URL pipeline cannot do Widevine Modular (LG supports it there only
+  through MSE/EME with an in-app CDM; every load-option form ends in
+  `552 Encrypted Content`). See "Hardware Widevine (L1)" above.
 - **Streams with VP9/Opus tracks** in DASH fail to load through the media
   pipeline on webOS 6. Widevine streams with them play through the hardware
   route (`compat-widevine-l1`).

@@ -36,19 +36,9 @@ mkdir -p "$FW/compat/webos3/out"
   -o "$FW/compat/webos3/out/libudev.so.1" "$FW/compat/webos3/udev_compat.c" -ldl -lpthread
 "$CC" -O2 -Wall -o "$FW/tools/tv-key/tv-key" "$FW/tools/tv-key/tv-key.c"
 
-# Widevine CDM proxy (C++, needs the NDK's g++ for the CDM's libstdc++ ABI).
+# C++ parts, with the NDK's g++ (the CDM's and LG's libstdc++ ABI).
 NDK_ENV="$FW/toolchains/lg-ndk-11.2.0/environment-setup-ca9v1-webosmllib32-linux-gnueabi"
 if [ -e "$NDK_ENV" ]; then
-  mkdir -p "$FW/compat/widevine/out"
-  # shellcheck source=/dev/null
-  ( . "$NDK_ENV" >/dev/null 2>&1
-    $CXX -std=c++17 -O2 -Wall -Wextra -fPIC -shared -fvisibility=hidden \
-      -Wl,-soname,libwv-compat.so -o "$FW/compat/widevine/out/libwv-compat.so" \
-      "$FW/compat/widevine/wv_proxy.cpp" "$FW/compat/widevine/cenc_mp4.cpp" \
-      "$FW/compat/widevine/wv_cdm.cpp" -ldl -lpthread
-    $CXX -std=c++17 -O2 -Wall -Wextra -o "$FW/compat/widevine/out/wv-selftest" \
-      "$FW/compat/widevine/wv_selftest.cpp" "$FW/compat/widevine/wv_cdm.cpp" -ldl -lpthread )
-
   # Opt-in hardware Widevine (secure video path): see compat/widevine-l1/NOTICE.
   L1="$FW/compat/widevine-l1"
   mkdir -p "$L1/out"
@@ -56,10 +46,7 @@ if [ -e "$NDK_ENV" ]; then
   ( . "$NDK_ENV" >/dev/null 2>&1
     $CXX -std=c++17 -O2 -Wall -Wextra -Wno-psabi -fPIC -shared -fvisibility=hidden \
       -Wl,-soname,libwv-l1.so -o "$L1/out/libwv-l1.so" \
-      "$L1/wv_l1_player.cpp" "$L1/l1_cdm.cpp" "$L1/fmp4.cpp" "$L1/dash.cpp" \
-      "$FW/compat/widevine/wv_cdm.cpp" -ldl -lpthread
-    $CXX -std=c++17 -O2 -Wall -Wextra -Wno-psabi -rdynamic -o "$L1/out/l1-selftest" \
-      "$L1/l1_selftest.cpp" "$FW/compat/widevine/wv_cdm.cpp" "$FW/compat/widevine/cenc_mp4.cpp" -ldl -lpthread )
+      "$L1/wv_l1_player.cpp" "$L1/l1_cdm.cpp" "$L1/fmp4.cpp" "$L1/dash.cpp" "$L1/http.cpp" -ldl -lpthread )
 
   # webOS 3 (COMPAT_WEBOS3=1): see compat/webos3/NOTICE. C++ with the NDK's g++
   # so std::string and LS::Call match LG's binaries.

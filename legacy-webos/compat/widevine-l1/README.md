@@ -1,7 +1,6 @@
 # Hardware (L1) Widevine route — experimental
 
-Opt-in with an empty `webos/meta/compat-widevine-l1` in the app (checked before
-`compat-widevine-cdm`). Widevine DASH loads from `video_player_drm` then play
+Opt-in with an empty `webos/meta/compat-widevine-l1` in the app. Widevine DASH loads from `video_player_drm` then play
 through `libwv-l1.so` instead of NDL:
 
 - **Licence:** the TV's Widevine CE CDM wrapper (`/usr/lib/libwvcdm_shared.so`,
@@ -129,6 +128,3 @@ Words in `<app dir>/compat-l1-opts`:
 | `noabr` | No quality switching |
 | `slownet` | Count downloads as 3 Mbit/s, to test switching |
 | `uid-app` | Create the player with the app id (gives error 601 on webOS 6) |
-
-`out/l1-selftest` (built by `tools/build-shims.sh`) checks the CDM, licence
-and decrypting from inside an app's jail without the player.
