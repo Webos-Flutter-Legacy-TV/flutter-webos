@@ -76,8 +76,14 @@ Main 10 HDR, E-AC-3 7.1, live DASH (SegmentTemplate, 10 s behind the edge,
 plays at 1x), live with a period change every 60 s, on-demand with two
 periods.
 
-Built and checked on a PC only: VP9, Dolby Vision, Opus, AC-3, `mdcv`/`clli`
-HDR metadata, key rotation, adaptive quality switching. Not supported: in-stream subtitles (no
+Checked on the TV with streams made locally (`tools/l1-test-media.sh`, served
+by `tools/media-server.sh`; drm_test cases `l1local_*`, built with
+`--dart-define=MEDIA_BASE=http://<host>:8099`): VP9 with Opus, H.264 with
+AC-3 5.1, HEVC HDR10 with `mdcv`/`clli` (sent with `setHdrInfo`), and
+adaptive quality switching (three H.264 qualities; with `slownet` it drops
+from 1080p to 480p).
+
+Built and checked on a PC only: Dolby Vision, key rotation. Not supported: in-stream subtitles (no
 renderer on this route; use Flutter's `closedCaptionFile`), HLS, PlayReady on
 this route, live period changes.
 

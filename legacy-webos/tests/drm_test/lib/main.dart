@@ -70,11 +70,19 @@ const cases = <Case>[
   Case('l1clear_live_periods', 'https://livesim2.dashif.org/livesim2/periods_60/testpic_2s/Manifest.mpd',
       VideoFormat.dash),
   Case('l1clear_multiperiod', 'https://dash.akamaized.net/dash264/TestCases/5a/nomor/1.mpd', VideoFormat.dash),
+  // Streams made locally by tools/l1-test-media.sh and served by
+  // tools/media-server.sh (build with --dart-define=MEDIA_BASE=http://<host>:8099).
+  Case('l1local_vp9_opus', '$_media/l1/vp9_opus/manifest.mpd', VideoFormat.dash),
+  Case('l1local_ac3', '$_media/l1/h264_ac3/manifest.mpd', VideoFormat.dash),
+  Case('l1local_hdr10', '$_media/l1/hevc_hdr10/manifest.mpd', VideoFormat.dash),
+  Case('l1local_abr', '$_media/l1/abr_h264/manifest.mpd', VideoFormat.dash),
   Case('playready_smooth',
       'https://test.playready.microsoft.com/smoothstreaming/SSWSS720H264PR/SuperSpeedway_720.ism/Manifest',
       VideoFormat.ss,
       DrmConfigs(type: DrmType.playready, licenseServerUrl: 'https://test.playready.microsoft.com/service/rightsmanager.asmx')),
 ];
+
+const _media = String.fromEnvironment('MEDIA_BASE', defaultValue: 'http://127.0.0.1:8099');
 
 const _axinomToken =
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2ZXJzaW9uIjoxLCJjb21fa2V5X2lkIjoiYjMzNjRlYjUtNTFmNi00YWUzLThjOTgtMzNjZWQ1ZTMxYzc4IiwibWVzc2FnZSI6eyJ0eXBlIjoiZW50aXRsZW1lbnRfbWVzc2FnZSIsInZlcnNpb24iOjIsImxpY2Vuc2UiOnsiYWxsb3dfcGVyc2lzdGVuY2UiOnRydWV9LCJjb250ZW50X2tleXNfc291cmNlIjp7ImlubGluZSI6W3siaWQiOiIwODcyNzg2ZS1mOWU3LTQ2NWYtYTNhMi00ZTViMGVmOGZhNDUiLCJlbmNyeXB0ZWRfa2V5IjoiUHc2K2VFWU5jdmpZYmZzaDNYM2ZtZz09IiwidXNhZ2VfcG9saWN5IjoiUG9saWN5IEEifSx7ImlkIjoiYzE0ZjA3MDktZjJiOS00NDI3LTkxNmItNjFiNTI1ODY1MDZhIiwiZW5jcnlwdGVkX2tleSI6Ii8xK2ZOaWgzOG1xUnY0eWNZem50L3c9PSIsInVzYWdlX3BvbGljeSI6IlBvbGljeSBBIn0seyJpZCI6IjhiMDI5ZTUxLWQ1NmEtNDRiZC05MTBmLWQ0YjVmZDkwZmJhMiIsImVuY3J5cHRlZF9rZXkiOiJrcTBKdVpFanBGTjhzYVRtdDU2ME9nPT0iLCJ1c2FnZV9wb2xpY3kiOiJQb2xpY3kgQSJ9LHsiaWQiOiIyZDZlOTM4Ny02MGNhLTQxNDUtYWVjMi1jNDA4MzdiNGIwMjYiLCJlbmNyeXB0ZWRfa2V5IjoiVGNSUWVCV3hFb0hPS0hyYWQ0U2VWUT09IiwidXNhZ2VfcG9saWN5IjoiUG9saWN5IEEifSx7ImlkIjoiZGUwMmYwN2YtYTA5OC00ZWUwLWI1NTYtOTA3YzBkMTdmYmJjIiwiZW5jcnlwdGVkX2tleSI6InBvZW5jUzdHZ21lR0Zlb0o2UEVBVFE9PSIsInVzYWdlX3BvbGljeSI6IlBvbGljeSBBIn0seyJpZCI6IjkxNGU2OWY0LTBhYjMtNDUzNC05ZTlmLTk4NTM2MTVlMjZmNiIsImVuY3J5cHRlZF9rZXkiOiJlaUkvTXNsbHJRNHdDbFJUL0xObUNBPT0iLCJ1c2FnZV9wb2xpY3kiOiJQb2xpY3kgQSJ9LHsiaWQiOiJkYTQ0NDVjMi1kYjVlLTQ4ZWYtYjA5Ni0zZWYzNDdiMTZjN2YiLCJlbmNyeXB0ZWRfa2V5IjoiMncremR2cXJwRFYzeFIwYkp5NHVndz09IiwidXNhZ2VfcG9saWN5IjoiUG9saWN5IEEifSx7ImlkIjoiMjlmMDVlOGYtYTFhZS00NmU0LTgwZTktMjJkY2Q0NGNkN2ExIiwiZW5jcnlwdGVkX2tleSI6Ii94bFNIcHh3cXUzZ28vZ2xwbVNnYVE9PSIsInVzYWdlX3BvbGljeSI6IlBvbGljeSBBIn0seyJpZCI6IjY5ZmU3MDc3LWRhZGQtNGI1NS05NmNkLWMzZWRiMzk5MTg1MyIsImVuY3J5cHRlZF9rZXkiOiJ6dTZpdXpOMnBzaTBaU3hRaUFUa1JRPT0iLCJ1c2FnZV9wb2xpY3kiOiJQb2xpY3kgQSJ9XX0sImNvbnRlbnRfa2V5X3VzYWdlX3BvbGljaWVzIjpbeyJuYW1lIjoiUG9saWN5IEEiLCJwbGF5cmVhZHkiOnsibWluX2RldmljZV9zZWN1cml0eV9sZXZlbCI6MTUwLCJwbGF5X2VuYWJsZXJzIjpbIjc4NjYyN0Q4LUMyQTYtNDRCRS04Rjg4LTA4QUUyNTVCMDFBNyJdfX1dfX0.R7aHvOHPBV-f2VfjeQC0AOi9axZI_xGIlpB-OScAzy4';
@@ -192,6 +200,18 @@ class _DrmPageState extends State<DrmPage> {
             last = now;
           }
           log('STEP live_periods_done');
+        }
+        if (k.name == 'l1local_abr') {
+          // Three qualities (1080p 6 Mbit/s, 720p, 480p): log the picture
+          // size as the player switches (slownet in compat-l1-opts forces
+          // a lower one).
+          final sizes = <String>[];
+          for (var i = 0; i < 12; i++) {
+            await Future.delayed(const Duration(seconds: 2));
+            sizes.add('${c.value.position.inSeconds}s:${c.value.size.height.toInt()}');
+          }
+          log('abr sizes: ${sizes.join(' ')}');
+          log('STEP abr_local_done');
         }
         if (k.name == 'widevine_uhd_long') {
           // 4K for three minutes: a 10 s window advancing less than 8 s is

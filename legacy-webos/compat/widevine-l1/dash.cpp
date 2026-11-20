@@ -152,9 +152,18 @@ std::string fill(std::string t, const std::string &id, uint32_t bw, uint64_t num
     size_t e = t.find('$', i + 1);
     if (e == std::string::npos) break;
     std::string fmt = t.substr(i + 7, e - i - 7);
+    // Only the width is taken from the format (%05d, %5d, %d): passing the
+    // 64-bit number to the template's own %d would read the wrong argument
+    // on 32-bit ARM.
+    int width = 0;
+    bool zero = false;
+    if (fmt.size() > 1 && fmt[0] == '%') {
+      zero = fmt[1] == '0';
+      width = atoi(fmt.c_str() + 1);
+      if (width < 0 || width > 20) width = 0;
+    }
     char buf[32];
-    if (fmt.empty()) snprintf(buf, sizeof(buf), "%llu", (unsigned long long)number);
-    else snprintf(buf, sizeof(buf), fmt.c_str(), (unsigned long long)number);
+    snprintf(buf, sizeof(buf), zero ? "%0*llu" : "%*llu", width, (unsigned long long)number);
     t.replace(i, e - i + 1, buf);
   }
   return t;

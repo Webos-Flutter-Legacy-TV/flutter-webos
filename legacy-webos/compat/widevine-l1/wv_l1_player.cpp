@@ -372,7 +372,7 @@ std::string audioInfo(const Track &a) {
     return b;
   }
   if (a.codec == "OPUS") {
-    snprintf(b, sizeof(b), "\"opusInfo\":{\"channels\":%u,\"frequency\":%.3f,\"streamHeader\":\"", a.channels,
+    snprintf(b, sizeof(b), "\"opusInfo\":{\"channels\":%u,\"sampleRate\":%.3f,\"streamHeader\":\"", a.channels,
              a.sample_rate / 1000.0);
     return b + b64encode(a.opus_head) + "\"}";
   }
