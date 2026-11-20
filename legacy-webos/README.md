@@ -186,10 +186,12 @@ app does:
 
 Verified on webOS 6.5.3 (LG C1), picture on screen: 1080p and 4K H.264 and
 HEVC with audio, licence by URL and by callback, seeking, audio track
-switching, 3 minutes of 4K HEVC at 20 Mbit/s without stalls. Built but not yet
-checked on a TV: VP9, AV1, Dolby Vision, HDR10, E-AC-3/AC-3/Opus, live DASH,
-several periods and keys, adaptive quality. Not supported: in-stream
-subtitles, HLS. Details, debug options and status:
+switching, 3 minutes of 4K HEVC at 20 Mbit/s without stalls. Through the same
+player with clear streams (public, and made by `tools/l1-test-media.sh`):
+AV1, VP9, Dolby Vision Profile 8.1, HDR10, AC-3, E-AC-3 with Atmos, Opus, live
+DASH, several periods, adaptive quality. Not yet checked on a TV: key
+rotation, several keys across periods. Not supported: in-stream subtitles,
+HLS, period changes in live streams. Details, debug options and status:
 [compat/widevine-l1/README.md](compat/widevine-l1/README.md).
 
 The same caution as for the software route applies: this uses the TV's CDM
@@ -363,7 +365,9 @@ the frame-timing scenes (`tools/perf-variant.sh` sets it).
   URL pipeline cannot do Widevine Modular (LG supports it there only through
   MSE/EME with an in-app CDM; every load-option form ends in
   `552 Encrypted Content`). See "Widevine on older webOS" above.
-- **Streams with VP9/Opus tracks** in DASH fail to load on webOS 6.
+- **Streams with VP9/Opus tracks** in DASH fail to load through the media
+  pipeline on webOS 6. Widevine streams with them play through the hardware
+  route (`compat-widevine-l1`).
 - **device_info_plus**: use `DeviceInfoWebOSPlugin().webosInfo`; the generic
   `DeviceInfoPlugin().deviceInfo` casts to `LinuxDeviceInfo` and throws.
 - `PlatformDispatcher.displays.first.refreshRate` reports 16666 (the embedder

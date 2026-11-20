@@ -99,7 +99,8 @@ dependencies:
   (`WidgetsBindingObserver.didPopRoute`), like Android, so `Navigator` and
   `PopScope` work as usual. Check how your app behaves on its first page.
 - **Video:** one video plane at a time; seeking resumes after 4-7 s; DASH
-  streams with VP9 or Opus tracks do not load.
+  streams with VP9 or Opus tracks do not load through the media pipeline
+  (Widevine streams with them play through `compat-widevine-l1`).
 - **Frame rate:** light UI runs at 50-60 fps with Impeller; avoid large
   shadows, blurs and `Opacity` over big areas, which the GPU handles slowly.
 - **refreshRate** reports 16666; assume 60 Hz.
