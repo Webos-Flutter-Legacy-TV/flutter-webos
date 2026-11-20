@@ -59,6 +59,17 @@ const cases = <Case>[
       'https://media.axprod.net/TestVectors/v7-MultiDRM-MultiKey-MultiPeriod/Manifest_1080p.mpd',
       VideoFormat.dash,
       DrmConfigs(type: DrmType.widevine, licenseCallback: _axinomLicense)),
+  // Clear streams for the L1 player's stream handling (with the test aid
+  // <app dir>/compat-l1-clear they go through libwv-l1, else through NDL).
+  Case('l1clear_av1', 'https://livesim2.dashif.org/vod/testpic_2s_av1/Manifest.mpd', VideoFormat.dash),
+  Case('l1clear_av1_live', 'https://livesim2.dashif.org/livesim2/testpic_2s_av1/Manifest.mpd', VideoFormat.dash),
+  Case('l1clear_hevc_hdr', 'https://dash.akamaized.net/dash264/TestCasesHDR/3a/1/MultiRate.mpd', VideoFormat.dash),
+  Case('l1clear_eac3', 'https://dash.akamaized.net/dash264/TestCasesMCA/dolby/2/1/ChID_voices_71_768_ddp.mpd',
+      VideoFormat.dash),
+  Case('l1clear_live', 'https://livesim2.dashif.org/livesim2/testpic_2s/Manifest.mpd', VideoFormat.dash),
+  Case('l1clear_live_periods', 'https://livesim2.dashif.org/livesim2/periods_60/testpic_2s/Manifest.mpd',
+      VideoFormat.dash),
+  Case('l1clear_multiperiod', 'https://dash.akamaized.net/dash264/TestCases/5a/nomor/1.mpd', VideoFormat.dash),
   Case('playready_smooth',
       'https://test.playready.microsoft.com/smoothstreaming/SSWSS720H264PR/SuperSpeedway_720.ism/Manifest',
       VideoFormat.ss,
@@ -170,6 +181,17 @@ class _DrmPageState extends State<DrmPage> {
           await Future.delayed(const Duration(seconds: 8));
           log('period 2: position ${c.value.position.inMilliseconds}ms');
           log('STEP multiperiod_done');
+        }
+        if (k.name == 'l1clear_live_periods') {
+          // Live with a new period every 60 s: play across a period change.
+          var last = c.value.position.inMilliseconds;
+          for (var i = 0; i < 8; i++) {
+            await Future.delayed(const Duration(seconds: 10));
+            final now = c.value.position.inMilliseconds;
+            log('live periods: ${now}ms (+${now - last}ms)');
+            last = now;
+          }
+          log('STEP live_periods_done');
         }
         if (k.name == 'widevine_uhd_long') {
           // 4K for three minutes: a 10 s window advancing less than 8 s is

@@ -214,8 +214,10 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
     }
   }
   if (!out->dynamic && out->duration <= 0) out->duration = starts[np - 1] + durs[np - 1];
-  // Live: the current (last) period only.
-  size_t first_period = out->dynamic ? np - 1 : 0;
+  // Live too: every period in the manifest (those in the time-shift window),
+  // joined, so the old period's last segments stay playable after a new one
+  // starts.
+  size_t first_period = 0;
   for (size_t pi = first_period; pi < np; pi++) {
   const Elem &period = periods[pi];
   double period_start = starts[pi], period_dur = durs[pi];
@@ -306,7 +308,7 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
             if (!attr(s.attrs, "t").empty()) t = strtoull(attr(s.attrs, "t").c_str(), nullptr, 10);
             uint64_t d = strtoull(attr(s.attrs, "d").c_str(), nullptr, 10);
             long r = atol(attr(s.attrs, "r").c_str());
-            double end = (out->dynamic ? live_now : period_dur) * timescale + pto;
+            double end = (out->dynamic ? (period_dur > 0 ? std::min(live_now, period_dur) : live_now) : period_dur) * timescale + pto;
             if (r < 0) r = d ? static_cast<long>(std::ceil((end - t) / d)) - 1 : 0;
             for (long k = 0; k <= r; k++) {
               if (out->dynamic && (t + d - pto) / timescale > live_now) break;  // not available yet
@@ -331,6 +333,8 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
             first = from > 0 ? static_cast<size_t>(std::floor(from / seg)) : 0;
             if (first > last) first = last;
             count = last + 1;
+            // An earlier period ends at the next one's start.
+            if (period_dur > 0) count = std::min(count, static_cast<size_t>(std::ceil(period_dur * timescale / d - 1e-9)));
           } else {
             if (period_dur <= 0) continue;
             count = static_cast<size_t>(std::ceil(period_dur * timescale / d));

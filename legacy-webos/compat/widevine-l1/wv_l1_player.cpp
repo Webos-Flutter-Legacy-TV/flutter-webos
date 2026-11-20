@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -629,7 +630,7 @@ class Player {
   // A licence for a key set not licensed yet: key rotation ('pssh' in
   // segments), a new period, or separate audio keys. Each is its own session.
   bool addLicence(const std::string &pssh) {
-    if (pssh.empty() || licensed_.count(pssh)) return true;
+    if (clear_ || pssh.empty() || licensed_.count(pssh)) return true;
     std::string challenge, lic;
     if (!cdm_.generateRequest(pssh, &challenge)) { fail(cdm_.error()); return false; }
     if (!exchange(challenge, &lic, "licence")) return false;
@@ -666,7 +667,7 @@ class Player {
     p += "\"appId\":\"" + app + "\",";
     if (!win.empty()) p += "\"windowId\":\"" + win + "\",";
     if (!has_audio_) p += "\"needAudio\":false,";
-    if (!opt("nodrm")) p += "\"drm\":{\"type\":\"WIDEVINE_MODULAR\"},";
+    if (!nodrm()) p += "\"drm\":{\"type\":\"WIDEVINE_MODULAR\"},";
     p += "\"transmission\":{\"contentsType\":\"LIVE\",\"trickType\":\"client-side\"},\"seekMode\":\"keep-rate\",";
     // The resource calculator sizes the decoder from these (as Kodi sends).
     {
@@ -677,7 +678,7 @@ class Player {
                uhd ? 4096 : 1920, uhd ? 2160 : 1080, fps_ > 30 ? 60 : 30);
       p += as;
     }
-    p += "\"externalStreamingInfo\":{" + (opt("nodrm") ? std::string() : "\"svpVersion\":" + std::to_string(svp) + ",") + "\"contents\":" + contents +
+    p += "\"externalStreamingInfo\":{" + (nodrm() ? std::string() : "\"svpVersion\":" + std::to_string(svp) + ",") + "\"contents\":" + contents +
          ",\"bufferingCtrInfo\":{\"preBufferByte\":0,\"bufferMinLevel\":0,\"bufferMaxLevel\":0,"
          "\"qBufferLevelVideo\":0,\"srcBufferLevelVideo\":{\"minimum\":0,\"maximum\":8388608},"
          "\"qBufferLevelAudio\":0,\"srcBufferLevelAudio\":{\"minimum\":0,\"maximum\":2097152}}}";
@@ -711,11 +712,15 @@ class Player {
   bool feedSample(const Track &t, const std::string &data, Sample s, bool video, bool *logged, double offset) {
     {
       const uint8_t *src = reinterpret_cast<const uint8_t *>(data.data()) + s.offset;
-      int64_t pts_ns = s.pts * 1000000000LL / t.timescale + static_cast<int64_t>(offset * 1e9);
+      // Pipeline time: presentation time minus base_s_ (live: the window
+      // start), in ticks first: pts * 1e9 overflows 64 bits for live media
+      // times (seconds since 1970 in the track timescale).
+      int64_t base_ticks = static_cast<int64_t>(std::llround((base_s_ - offset) * t.timescale));
+      int64_t pts_ns = (s.pts - base_ticks) * 1000000000LL / t.timescale;
       std::vector<uint8_t> in, out;
       if (video && t.codec == "VP9") {
         in.assign(src, src + s.size);  // VP9 frames go as they are
-        if (!s.encrypted && !opt("nodrm") && !t.kid.empty()) {
+        if (!s.encrypted && !nodrm() && !t.kid.empty()) {
           s.encrypted = true;
           s.iv.assign(16, '\0');
           s.subsamples.assign(1, {static_cast<uint32_t>(in.size()), 0u});
@@ -739,7 +744,7 @@ class Player {
         if (s.encrypted && pre) s.subsamples[0].first += static_cast<uint32_t>(pre);
         // Clear samples (e.g. a clear lead) go down the secure path too: as
         // 'cenc' samples with no protected bytes, under the track's key id.
-        if (!s.encrypted && !opt("nodrm") && !t.kid.empty()) {
+        if (!s.encrypted && !nodrm() && !t.kid.empty()) {
           s.encrypted = true;
           s.iv.assign(16, '\0');
           s.subsamples.assign(1, {static_cast<uint32_t>(in.size()), 0u});
@@ -771,7 +776,7 @@ class Player {
       int64_t ms = -1;
       {
         std::lock_guard<std::mutex> l(m_);
-        if (loaded_ && frame_pts_ns_ >= 0) ms = frame_pts_ns_ / 1000000 - origin_ms_;
+        if (loaded_ && frame_pts_ns_ >= 0) ms = frame_pts_ns_ / 1000000 + base_ms() - origin_ms_;
         if (ms < 0) ms = 0;
       }
       if (ms >= 0 && ms != last) {
@@ -939,7 +944,12 @@ class Player {
     emit(info);
   }
 
+  // Clear stream (no "drm" in the load option; compat-l1-clear test aid) or
+  // the nodrm debug option: no secure path, samples fed as they are.
+  bool nodrm() const { return clear_ || opt("nodrm"); }
+
   void run() {
+    clear_ = option_.find("\"drm\":{") == std::string::npos;
     std::string mpd, cr, ct, err;
     if (wvcompat::Host::httpGet(url_, "", &mpd, &cr, &ct) != 200) { fail("manifest download failed"); return; }
     Manifest man;
@@ -988,7 +998,7 @@ class Player {
     has_audio_ = !opt("noaudio") && arep && prepareTrack(arep, &atrack_, &audio_init_pssh) && !atrack_.codec.empty();
     arep_ = has_audio_ ? arep : nullptr;
     if (pssh.empty()) pssh = init_pssh;
-    if (pssh.empty()) { fail("no Widevine PSSH"); return; }
+    if (pssh.empty() && !clear_) { fail("no Widevine PSSH"); return; }
     logf("video %s %s %ux%u %u bit/s, %zu segments; audio %s", vrep->id.c_str(), vtrack_.codec.c_str(), vtrack_.width, vtrack_.height,
          vrep->bandwidth, vrep->segments.size(), has_audio_ ? arep->id.c_str() : "none");
     // Adaptive quality: the other representations of the same codec,
@@ -1003,7 +1013,8 @@ class Player {
               [](const Variant &a, const Variant &b) { return a.rep->bandwidth < b.rep->bandwidth; });
     cur_ = variants_.size() - 1;
     if (variants_.size() > 1) logf("adaptive quality: %zu representations", variants_.size());
-    if (!licence(pssh)) return;
+    if (clear_) logf("clear stream (compat-l1-clear): no licence, no secure path");
+    else if (!licence(pssh)) return;
     tracks_[{vrep, 0}] = vtrack_;
     if (has_audio_) {
       // Audio may have its own key set.
@@ -1035,7 +1046,9 @@ class Player {
       // Start a few segments behind the live edge (or the suggested delay).
       const auto &segs = variants_[cur_].rep->segments;
       if (segs.empty()) { fail("live manifest has no segments yet"); return; }
-      double back = std::max(man.presentation_delay, 3 * segs.back().duration);
+      // At least 10 s (or 3 segments) behind the edge: the buffer covers
+      // the manifest refreshes.
+      double back = std::max({man.presentation_delay, 3 * segs.back().duration, 10.0});
       double target = segs.back().start + segs.back().duration - back;
       while (vi + 1 < segs.size() && segs[vi].start < target) vi++;
       if (arep_)
@@ -1043,6 +1056,11 @@ class Player {
       // Position 0 is the start of the time-shift window, the duration its
       // length now (the app's seekTo stays within it).
       origin_ms_ = static_cast<int64_t>(segs.front().start * 1000);
+      base_s_ = segs.front().start;
+      // The pipeline's clock starts at 0 and holds samples until their time
+      // (pauseAtDecodeTime): move it to where feeding starts.
+      internal_seeks_++;
+      sf_.seek(sf_.obj, std::to_string(static_cast<long long>((segs[vi].start - base_s_) * 1000)).c_str());
       live_window_ms_ = static_cast<int64_t>((segs.back().start + segs.back().duration - segs.front().start) * 1000);
       logf("live: %zu segments available, starting at %.1f s (%.1f s behind the edge)", segs.size(), segs[vi].start,
            segs.back().start + segs.back().duration - segs[vi].start);
@@ -1059,7 +1077,7 @@ class Player {
           tracks += std::string(i ? "," : "") + "{\"language\":\"" + (audio_opts_[i]->lang.empty() ? "und" : audio_opts_[i]->lang) +
                     "\",\"trackId\":" + std::to_string(i) + "}";
       emit(std::string("{\"sourceInfo\":{\"seekable\":true,\"programInfo\":[{\"duration\":") +
-           std::to_string(live_ ? static_cast<long long>(live_window_ms_) : static_cast<long long>(man.duration * 1000)) + ",\"numVideoTracks\":1,\"numAudioTracks\":" +
+           std::to_string(live_ ? static_cast<long long>(live_window_ms_ + kLiveExtraMs) : static_cast<long long>(man.duration * 1000)) + ",\"numVideoTracks\":1,\"numAudioTracks\":" +
            std::to_string(has_audio_ ? audio_opts_.size() : 0) + ",\"audioTrackInfo\":[" + tracks + "]}]}}");
     }
     emit("{\"loadCompleted\":true}");
@@ -1161,7 +1179,7 @@ class Player {
       if (seek_ms >= 0) seek_ms += origin_ms_;  // app position -> presentation time
       if (audio_switch >= 0 && has_audio_ && switchAudio(audio_switch) && seek_ms < 0) {
         // Restart from the current position with the new track.
-        seek_ms = frame_pts_ns_ >= 0 ? frame_pts_ns_ / 1000000 : origin_ms_;
+        seek_ms = frame_pts_ns_ >= 0 ? frame_pts_ns_ / 1000000 + base_ms() : origin_ms_;
         internal_seeks_++;
       }
       if (seek_ms >= 0) {
@@ -1173,7 +1191,7 @@ class Player {
           while (ai + 1 < arep_->segments.size() && arep_->segments[ai + 1].start <= segs[vi].start) ai++;
         vc.loaded = ac.loaded = false;
         eos = false;
-        sf_.seek(sf_.obj, std::to_string(static_cast<long long>(segs[vi].start * 1000)).c_str());
+        sf_.seek(sf_.obj, std::to_string(static_cast<long long>((segs[vi].start - base_s_) * 1000)).c_str());
         logf("seek to %lld ms: video segment %zu", (long long)seek_ms, vi);
       }
       if (eos) continue;
@@ -1245,8 +1263,15 @@ class Player {
   int placed_w_ = 0, placed_h_ = 0;
   bool apply_subscribed_ = false;
   bool live_ = false;
+  bool clear_ = false;
   int64_t origin_ms_ = 0;       // presentation time shown as position 0 (live: window start)
+  double base_s_ = 0;           // presentation time fed to the pipeline as 0 (live: window start)
+  int64_t base_ms() const { return static_cast<int64_t>(base_s_ * 1000); }
   int64_t live_window_ms_ = 0;  // live: time-shift window length at load
+  // Live: the duration reported is the window plus a day, because Flutter's
+  // video_player clamps the position to the duration (and marks the video
+  // completed there); seeks past the live edge land on the newest segment.
+  static constexpr int64_t kLiveExtraMs = 24LL * 3600 * 1000;
   std::map<std::pair<const Representation *, int>, Track> tracks_;  // by representation and period part
   std::set<std::string> licensed_;  // Widevine pssh boxes with a licence
   size_t cur_ = 0;

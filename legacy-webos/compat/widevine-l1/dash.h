@@ -1,8 +1,8 @@
 // Minimal DASH manifest reader for the L1 player (periods joined).
 // Supports SegmentBase with a 'sidx' index and SegmentTemplate with
 // $Number$ or $Time$ (fixed duration or SegmentTimeline). Live (dynamic)
-// manifests: the segments available at `now` (SegmentTemplate only); the
-// caller parses the manifest again to get newer ones.
+// manifests: the segments available at `now` (SegmentTemplate only, all
+// periods joined); the caller parses the manifest again to get newer ones.
 #pragma once
 
 #include <cstdint>

@@ -26,7 +26,9 @@ through `libwv-l1.so` instead of NDL:
   joined into one timeline, each with its own init segment, keys and time
   offset) and live (SegmentTemplate, current period; started a few segments
   behind the edge, manifest read again as it runs out; position 0 is the
-  start of the time-shift window, so the app can seek within it).
+  start of the time-shift window, so the app can seek within it; the duration
+  reported is the window plus a day, as video_player clamps the position to
+  it).
   Fragmented MP4, CENC `cenc`/`cbcs`.
 - **Video:** H.264, HEVC (`avc1`/`avc3`/`hev1`/`hvc1`, 4-byte NAL lengths,
   converted to Annex B with parameter sets before key frames), Dolby Vision
@@ -67,9 +69,15 @@ Checked on the TV, picture seen on screen (20 November 2026):
 | Audio track switch (5 languages, same codec) | Works |
 | Multi-period, several keys (Axinom test vector) | Not verified: Axinom's licence server answers 403 to the published token |
 
-Built and checked on a PC with public streams, not yet on the TV: VP9, AV1,
-Dolby Vision, E-AC-3/AC-3/Opus, HDR metadata, live DASH and seeking, key
-rotation, adaptive quality switching. Not supported: in-stream subtitles (no
+Checked on the TV with clear public streams through the same player (test
+aid `compat-l1-clear`: clear DASH goes through libwv-l1 without licence or
+secure path; drm_test cases `l1clear_*`): AV1 (on demand and live), HEVC
+Main 10 HDR, E-AC-3 7.1, live DASH (SegmentTemplate, 10 s behind the edge,
+plays at 1x), live with a period change every 60 s, on-demand with two
+periods.
+
+Built and checked on a PC only: VP9, Dolby Vision, Opus, AC-3, `mdcv`/`clli`
+HDR metadata, key rotation, adaptive quality switching. Not supported: in-stream subtitles (no
 renderer on this route; use Flutter's `closedCaptionFile`), HLS, PlayReady on
 this route, live period changes.
 

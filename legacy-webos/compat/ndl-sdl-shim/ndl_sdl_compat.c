@@ -519,11 +519,17 @@ static void l1_emit(void *user, const char *json) {
 static int widevine_l1(const char *url, const char *option) {
   if (!url || !option || !app_file_exists("compat-widevine-l1")) return 0;
   const char *d = strstr(option, "\"drm\":{");
-  if (!d) return 0;
-  char type[32] = "", lic[16] = "";
-  if (!json_get_string(d, "type", type, sizeof(type)) || strcasecmp(type, "widevine") != 0) return 0;
-  json_get_string(d, "licenseUrl", lic, sizeof(lic));
-  if (!lic[0] && !strstr(d, "\"useLicenseCallback\":true")) return 0;
+  if (!d) {
+    // Test aid: <app dir>/compat-l1-clear sends clear DASH through libwv-l1
+    // too (no licence, no secure path), to check its stream handling and
+    // the TV's player with public clear streams (codecs, HDR, live).
+    if (!app_file_exists("compat-l1-clear") || !(strstr(url, ".mpd") || strstr(option, "MPEG-DASH"))) return 0;
+  } else {
+    char type[32] = "", lic[16] = "";
+    if (!json_get_string(d, "type", type, sizeof(type)) || strcasecmp(type, "widevine") != 0) return 0;
+    json_get_string(d, "licenseUrl", lic, sizeof(lic));
+    if (!lic[0] && !strstr(d, "\"useLicenseCallback\":true")) return 0;
+  }
   if (!l1.load) {
     void *h = dlopen("libwv-l1.so", RTLD_NOW);
     if (!h) { fprintf(stderr, "[ndl-compat] widevine-l1: %s\n", dlerror()); return 0; }
