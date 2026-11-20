@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -211,12 +212,16 @@ int webosMajor() {
 }
 bool oldWebos() { return webosMajor() > 0 && webosMajor() < 5; }
 
-// Video codec ranking at equal resolution, and the codec family of a
+// Video codec ranking at equal resolution (Dolby Vision, HEVC, AV1, VP9,
+// H.264; 0: unusable), and the codec family of a
 // representation (quality switching stays within one family).
 int videoFamily(const Representation &r) {
   const std::string &c = r.codecs;
-  if (c.compare(0, 4, "hev1") == 0 || c.compare(0, 4, "hvc1") == 0) return 3;
-  if ((c.compare(0, 4, "vp09") == 0 || c == "vp9") && r.mime.find("mp4") != std::string::npos) return 2;
+  bool mp4 = r.mime.find("mp4") != std::string::npos;
+  if (c.compare(0, 4, "dvh1") == 0 || c.compare(0, 4, "dvhe") == 0) return opt("nodv") ? 0 : 5;  // Dolby Vision
+  if (c.compare(0, 4, "hev1") == 0 || c.compare(0, 4, "hvc1") == 0) return 4;
+  if (c.compare(0, 4, "av01") == 0 && mp4) return opt("noav1") ? 0 : 3;
+  if ((c.compare(0, 4, "vp09") == 0 || c == "vp9") && mp4) return 2;
   if (c.compare(0, 4, "avc1") == 0 || c.compare(0, 4, "avc3") == 0) return 1;
   return 0;
 }
@@ -401,15 +406,43 @@ class Player {
     return quit_;
   }
 
-  bool prepareTrack(Representation *rep, Track *track, std::string *pssh) {
-    if (rep->index_first >= 0) {
+  // SegmentBase: the 'sidx' of every period's part.
+  bool loadIndexes(Representation *rep) {
+    for (size_t i = 0; i < rep->parts.size(); i++) {
+      Part &pt = rep->parts[i];
+      if (pt.index_first < 0 || pt.indexed) continue;
       std::string sidx;
-      Segment idx{rep->init.url, rep->index_first, rep->index_last, 0, 0};
-      if (!fetch(idx, &sidx) || !loadIndex(rep, sidx)) return false;
+      Segment idx{pt.init.url, pt.index_first, pt.index_last, 0, 0};
+      if (!fetch(idx, &sidx) || !loadIndex(rep, sidx, static_cast<int>(i))) return false;
     }
+    return true;
+  }
+
+  bool prepareTrack(Representation *rep, Track *track, std::string *pssh) {
+    if (!loadIndexes(rep)) return false;
     std::string init;
     if (!fetch(rep->init, &init)) return false;
     return parseInit(init, track, pssh);
+  }
+
+  // The Track (codec setup, keys) of a representation's period part:
+  // fetched once, with a licence for its key set if that is new.
+  const Track *trackFor(Representation *rep, int part) {
+    auto key = std::make_pair(static_cast<const Representation *>(rep), part);
+    auto it = tracks_.find(key);
+    if (it != tracks_.end()) return &it->second;
+    if (part < 0 || part >= static_cast<int>(rep->parts.size())) return nullptr;
+    Track t;
+    std::string init, pssh;
+    if (!fetch(rep->parts[part].init, &init) || !parseInit(init, &t, &pssh)) {
+      logf("%s part %d: init segment failed", rep->id.c_str(), part);
+      return nullptr;
+    }
+    const Track &cur = t.video ? vtrack_ : atrack_;
+    if (t.codec != cur.codec) logf("%s part %d: codec %s, the pipeline has %s", rep->id.c_str(), part, t.codec.c_str(), cur.codec.c_str());
+    std::string m = b64decode(rep->parts[part].pssh_b64);
+    if (!addLicence(m.empty() ? pssh : m)) return nullptr;
+    return &(tracks_[key] = t);
   }
 
   // One licence-server round trip: by URL, or through the app (licence
@@ -453,10 +486,19 @@ class Player {
     std::string cert;
     if (!exchange(std::string("\x08\x04", 2), &cert, "service certificate")) return false;
     if (!cdm_.setServiceCertificate(cert)) { fail("service certificate: " + cdm_.error()); return false; }
+    return addLicence(pssh);
+  }
+
+  // A licence for a key set not licensed yet: key rotation ('pssh' in
+  // segments), a new period, or separate audio keys. Each is its own session.
+  bool addLicence(const std::string &pssh) {
+    if (pssh.empty() || licensed_.count(pssh)) return true;
     std::string challenge, lic;
     if (!cdm_.generateRequest(pssh, &challenge)) { fail(cdm_.error()); return false; }
     if (!exchange(challenge, &lic, "licence")) return false;
     if (!cdm_.update(lic)) { fail(cdm_.error()); return false; }
+    licensed_.insert(pssh);
+    if (licensed_.size() > 1) logf("licence %zu (new key set)", licensed_.size());
     return true;
   }
 
@@ -475,6 +517,11 @@ class Player {
       std::string ai = audioInfo(atrack_);
       if (!ai.empty()) contents += "," + ai;
       if (atrack_.atmos) contents += ",\"immersive\":\"ATMOS\"";
+    }
+    if (vtrack_.dv_profile >= 0 && !opt("nodv")) {
+      contents += std::string(",\"DolbyHdrInfo\":{\"encryptionType\":\"") + (vtrack_.scheme.empty() ? "clear" : "all") +
+                  "\",\"profileId\":" + std::to_string(vtrack_.dv_profile) + ",\"trackType\":\"" +
+                  (vtrack_.dv_el ? "dual" : "single") + "\"}";
     }
     contents += "}";
     int svp = opt("svp30") || oldWebos() ? 30 : 40;  // secure video path version
@@ -523,10 +570,11 @@ class Player {
   }
 
   // Feeds one sample of a segment. false: stop/seek.
-  bool feedSample(const Track &t, const std::string &data, Sample s, bool video, bool *logged) {
+  // offset: seconds from the part's media time to presentation time.
+  bool feedSample(const Track &t, const std::string &data, Sample s, bool video, bool *logged, double offset) {
     {
       const uint8_t *src = reinterpret_cast<const uint8_t *>(data.data()) + s.offset;
-      int64_t pts_ns = s.pts * 1000000000LL / t.timescale;
+      int64_t pts_ns = s.pts * 1000000000LL / t.timescale + static_cast<int64_t>(offset * 1e9);
       std::vector<uint8_t> in, out;
       if (video && t.codec == "VP9") {
         in.assign(src, src + s.size);  // VP9 frames go as they are
@@ -536,12 +584,14 @@ class Player {
           s.subsamples.assign(1, {static_cast<uint32_t>(in.size()), 0u});
         }
       } else if (video) {
-        // AVCC -> Annex B (4-byte lengths become start codes, in the clear
-        // part of each subsample), SPS/PPS in front of sync samples.
-        if (s.sync) in.assign(t.annexb_config.begin(), t.annexb_config.end());
+        // H.264/HEVC: AVCC -> Annex B (4-byte lengths become start codes,
+        // in the clear part of each subsample), parameter sets in front of
+        // sync samples. AV1: the sequence header from 'av1C' in front.
+        const std::string &cfg = t.codec == "AV1" ? t.av1_config : t.annexb_config;
+        if (s.sync) in.assign(cfg.begin(), cfg.end());
         size_t pre = in.size();
         in.insert(in.end(), src, src + s.size);
-        if (t.nal_length_size == 4) {
+        if (t.codec != "AV1" && t.nal_length_size == 4) {
           for (size_t o = pre; o + 4 <= in.size();) {
             uint32_t n = (uint32_t(in[o]) << 24) | (in[o + 1] << 16) | (in[o + 2] << 8) | in[o + 3];
             in[o] = in[o + 1] = in[o + 2] = 0;
@@ -560,7 +610,8 @@ class Player {
       } else {
         in.assign(src, src + s.size);
       }
-      CdmSample cs{in.data(), static_cast<uint32_t>(in.size()), s.encrypted, t.scheme == "cbcs" && !s.subsamples.empty() && s.subsamples[0].second, &t.kid,
+      CdmSample cs{in.data(), static_cast<uint32_t>(in.size()), s.encrypted, t.scheme == "cbcs" && !s.subsamples.empty() && s.subsamples[0].second,
+                   s.kid.empty() ? &t.kid : &s.kid,
                    reinterpret_cast<const uint8_t *>(s.iv.data()), s.subsamples, t.crypt_blocks, t.skip_blocks,
                    pts_ns / 1000};
       const std::vector<uint8_t> *feed = &in;
@@ -606,6 +657,8 @@ class Player {
       logf("audio track %d (%s): unusable", i, r->codecs.c_str());
       return false;
     }
+    std::string apssh = b64decode(r->pssh_b64);
+    if (!addLicence(apssh.empty() ? ignored : apssh)) return false;
     if (t.codec != atrack_.codec || audioInfo(t) != audioInfo(atrack_)) {
       if (!sf_.change_audio) {
         logf("audio track %d: codec %s needs changeAudioCodec (webOS 6 and later)", i, t.codec.c_str());
@@ -620,6 +673,7 @@ class Player {
     }
     logf("audio track %d: %s %s %u ch", i, r->lang.c_str(), t.codec.c_str(), t.channels);
     atrack_ = t;
+    tracks_[{r, 0}] = t;
     arep_ = r;
     audio_cur_ = i;
     return true;
@@ -679,13 +733,14 @@ class Player {
     if (!v.prepared) {
       std::string ignored;
       if (!prepareTrack(v.rep, &v.track, &ignored) || v.track.codec != vtrack_.codec ||
-          (v.track.codec != "VP9" && v.track.nal_length_size != 4)) {
+          ((v.track.codec == "H264" || v.track.codec == "H265") && v.track.nal_length_size != 4)) {
         logf("representation %s unusable, staying on %s", v.rep->id.c_str(), variants_[cur_].rep->id.c_str());
         variants_.erase(variants_.begin() + want);
         if (want < cur_) cur_--;
         return;
       }
       v.prepared = true;
+      tracks_[{v.rep, 0}] = v.track;
     }
     logf("quality: %s -> %s (%ux%u, %u bit/s; measured %.0f bit/s)", variants_[cur_].rep->id.c_str(), v.rep->id.c_str(),
          v.track.width, v.track.height, v.rep->bandwidth, speed_bps_);
@@ -715,7 +770,7 @@ class Player {
     Representation *vrep = nullptr;
     for (auto &r : man.reps)
       if (usable(r) && (!vrep || better(r, *vrep))) vrep = &r;
-    if (!vrep) { fail("no H.264, HEVC or VP9 (MP4) video representation"); return; }
+    if (!vrep) { fail("no H.264, HEVC, VP9 or AV1 (MP4) video representation"); return; }
     // Audio: one choice per AdaptationSet (its highest bandwidth supported
     // representation), listed to the app as audio tracks; AAC first by default.
     {
@@ -731,16 +786,17 @@ class Player {
     Representation *arep = audio_opts_.empty() ? nullptr : audio_opts_[audio_cur_];
     std::string pssh = b64decode(vrep->pssh_b64), init_pssh;
     if (!prepareTrack(vrep, &vtrack_, &init_pssh)) { fail("video init segment"); return; }
-    if (vtrack_.codec != "H264" && vtrack_.codec != "H265" && vtrack_.codec != "VP9") {
+    if (vtrack_.codec != "H264" && vtrack_.codec != "H265" && vtrack_.codec != "VP9" && vtrack_.codec != "AV1") {
       fail("unsupported video codec " + vrep->codecs);
       return;
     }
-    if (vtrack_.codec != "VP9" && vtrack_.nal_length_size != 4) {
+    if ((vtrack_.codec == "H264" || vtrack_.codec == "H265") && vtrack_.nal_length_size != 4) {
       fail("NAL length size " + std::to_string(vtrack_.nal_length_size) + " is not supported");
       return;
     }
     fps_ = vrep->fps;
-    has_audio_ = !opt("noaudio") && arep && prepareTrack(arep, &atrack_, &init_pssh) && !atrack_.codec.empty();
+    std::string audio_init_pssh;
+    has_audio_ = !opt("noaudio") && arep && prepareTrack(arep, &atrack_, &audio_init_pssh) && !atrack_.codec.empty();
     arep_ = has_audio_ ? arep : nullptr;
     if (pssh.empty()) pssh = init_pssh;
     if (pssh.empty()) { fail("no Widevine PSSH"); return; }
@@ -759,6 +815,13 @@ class Player {
     cur_ = variants_.size() - 1;
     if (variants_.size() > 1) logf("adaptive quality: %zu representations", variants_.size());
     if (!licence(pssh)) return;
+    tracks_[{vrep, 0}] = vtrack_;
+    if (has_audio_) {
+      // Audio may have its own key set.
+      std::string apssh = b64decode(arep->pssh_b64);
+      if (!addLicence(apssh.empty() ? audio_init_pssh : apssh)) return;
+      tracks_[{arep, 0}] = atrack_;
+    }
 
     std::string app = jsonValue(option_, "appId");
     if (!sf_.open(app.c_str())) { fail("StarfishMediaAPIs unavailable"); return; }
@@ -778,6 +841,23 @@ class Player {
         return;
       }
     }
+    size_t vi = 0, ai = 0;
+    if (live_) {
+      // Start a few segments behind the live edge (or the suggested delay).
+      const auto &segs = variants_[cur_].rep->segments;
+      if (segs.empty()) { fail("live manifest has no segments yet"); return; }
+      double back = std::max(man.presentation_delay, 3 * segs.back().duration);
+      double target = segs.back().start + segs.back().duration - back;
+      while (vi + 1 < segs.size() && segs[vi].start < target) vi++;
+      if (arep_)
+        while (ai + 1 < arep_->segments.size() && arep_->segments[ai + 1].start <= segs[vi].start) ai++;
+      // Position 0 is the start of the time-shift window, the duration its
+      // length now (the app's seekTo stays within it).
+      origin_ms_ = static_cast<int64_t>(segs.front().start * 1000);
+      live_window_ms_ = static_cast<int64_t>((segs.back().start + segs.back().duration - segs.front().start) * 1000);
+      logf("live: %zu segments available, starting at %.1f s (%.1f s behind the edge)", segs.size(), segs[vi].start,
+           segs.back().start + segs.back().duration - segs[vi].start);
+    }
     // videoInfo first: the plugin takes the size from its cache when the
     // sourceInfo arrives.
     char info[256];
@@ -789,8 +869,8 @@ class Player {
         for (size_t i = 0; i < audio_opts_.size(); i++)
           tracks += std::string(i ? "," : "") + "{\"language\":\"" + (audio_opts_[i]->lang.empty() ? "und" : audio_opts_[i]->lang) +
                     "\",\"trackId\":" + std::to_string(i) + "}";
-      emit(std::string("{\"sourceInfo\":{\"seekable\":") + (live_ ? "false" : "true") + ",\"programInfo\":[{\"duration\":" +
-           std::to_string(static_cast<long long>(man.duration * 1000)) + ",\"numVideoTracks\":1,\"numAudioTracks\":" +
+      emit(std::string("{\"sourceInfo\":{\"seekable\":true,\"programInfo\":[{\"duration\":") +
+           std::to_string(live_ ? static_cast<long long>(live_window_ms_) : static_cast<long long>(man.duration * 1000)) + ",\"numVideoTracks\":1,\"numAudioTracks\":" +
            std::to_string(has_audio_ ? audio_opts_.size() : 0) + ",\"audioTrackInfo\":[" + tracks + "]}]}}");
     }
     emit("{\"loadCompleted\":true}");
@@ -800,25 +880,12 @@ class Player {
     }
     clock_ = std::thread([this] { clockLoop(); });
 
-    size_t vi = 0, ai = 0;
-    if (live_) {
-      // Start a few segments behind the live edge (or the suggested delay).
-      const auto &segs = variants_[cur_].rep->segments;
-      if (segs.empty()) { fail("live manifest has no segments yet"); return; }
-      double back = std::max(man.presentation_delay, 3 * segs.back().duration);
-      double target = segs.back().start + segs.back().duration - back;
-      while (vi + 1 < segs.size() && segs[vi].start < target) vi++;
-      if (arep_)
-        while (ai + 1 < arep_->segments.size() && arep_->segments[ai + 1].start <= segs[vi].start) ai++;
-      origin_ms_ = static_cast<int64_t>(segs[vi].start * 1000);
-      logf("live: %zu segments available, starting at %.1f s (%.1f s behind the edge)", segs.size(), segs[vi].start,
-           segs.back().start + segs.back().duration - segs[vi].start);
-    }
     // Samples of the current video and audio segments are fed interleaved in
     // decode order: a whole UHD segment (~40 MB) does not fit the pipeline's
     // video buffer, and it will not start without audio.
     struct Cursor {
       const Track *track = nullptr;
+      double offset = 0;  // the segment's part: media -> presentation time
       std::string data;
       std::vector<Sample> samples;
       size_t next = 0;
@@ -826,7 +893,7 @@ class Player {
       bool logged = false;
     } vc, ac;
     bool eos = false;
-    auto load = [&](Cursor &c, size_t &idx, Representation *rep, const Track *t) -> bool {
+    auto load = [&](Cursor &c, size_t &idx, Representation *rep) -> bool {
       if (c.loaded && c.next >= c.samples.size()) {
         c.loaded = false;
         idx++;
@@ -835,17 +902,23 @@ class Player {
       if (video && !c.loaded) {
         chooseVariant();
         rep = variants_[cur_].rep;
-        t = &variants_[cur_].track;
       }
       if (c.loaded || !rep || idx >= rep->segments.size()) return true;
+      const Segment &sg = rep->segments[idx];
+      const Track *t = trackFor(rep, sg.part);  // the period's init (and keys)
+      if (!t) return false;
       c.data.clear();
       c.samples.clear();
       c.next = 0;
       auto t0 = std::chrono::steady_clock::now();
-      if (!fetch(rep->segments[idx], &c.data)) return false;
+      if (!fetch(sg, &c.data)) return false;
       if (video) measure(c.data.size(), std::chrono::steady_clock::now() - t0);
-      if (!parseSegment(c.data, *t, &c.samples)) logf("segment parse: samples beyond the data");
+      std::vector<std::string> psshs;
+      if (!parseSegment(c.data, *t, &c.samples, &psshs)) logf("segment parse: samples beyond the data");
+      for (auto &ps : psshs)
+        if (!addLicence(ps)) return false;  // key rotation
       c.track = t;
+      c.offset = rep->parts[sg.part].offset;
       c.loaded = true;
       return true;
     };
@@ -861,15 +934,7 @@ class Player {
         audio_switch = audio_pending_;
         audio_pending_ = -1;
       }
-      if (seek_ms >= 0) {
-        if (live_) {
-          logf("live: seeking is not supported");
-          emit("{\"seekDone\":true}");
-          seek_ms = -1;
-        } else {
-          seek_ms += origin_ms_;
-        }
-      }
+      if (seek_ms >= 0) seek_ms += origin_ms_;  // app position -> presentation time
       if (audio_switch >= 0 && has_audio_ && switchAudio(audio_switch) && seek_ms < 0) {
         // Restart from the current position with the new track.
         seek_ms = frame_pts_ns_ >= 0 ? frame_pts_ns_ / 1000000 : origin_ms_;
@@ -877,7 +942,7 @@ class Player {
       }
       if (seek_ms >= 0) {
         double t = seek_ms / 1000.0;
-        vi = ai = 0;  // (live: the lists start in the time-shift window)
+        vi = ai = 0;  // (live: within the current time-shift window)
         const auto &segs = variants_[cur_].rep->segments;
         while (vi + 1 < segs.size() && segs[vi + 1].start <= t) vi++;
         if (has_audio_)
@@ -888,9 +953,9 @@ class Player {
         logf("seek to %lld ms: video segment %zu", (long long)seek_ms, vi);
       }
       if (eos) continue;
-      if (!load(vc, vi, vrep, &vtrack_) || !load(ac, ai, arep_, &atrack_)) {
+      if (!load(vc, vi, vrep) || !load(ac, ai, arep_)) {
         if (quit()) return;
-        fail("segment download failed");
+        fail("segment, init segment or licence failed");
         return;
       }
       bool v_ready = vc.loaded && vc.next < vc.samples.size();
@@ -920,9 +985,10 @@ class Player {
       }
       bool take_video = v_ready;
       if (v_ready && a_ready)
-        take_video = double(vc.samples[vc.next].dts) / vc.track->timescale <= double(ac.samples[ac.next].dts) / ac.track->timescale;
+        take_video = double(vc.samples[vc.next].dts) / vc.track->timescale + vc.offset <=
+                     double(ac.samples[ac.next].dts) / ac.track->timescale + ac.offset;
       Cursor &c = take_video ? vc : ac;
-      if (feedSample(*c.track, c.data, c.samples[c.next], take_video, &c.logged)) c.next++;
+      if (feedSample(*c.track, c.data, c.samples[c.next], take_video, &c.logged, c.offset)) c.next++;
     }
   }
 
@@ -952,7 +1018,10 @@ class Player {
   Representation *arep_ = nullptr;
   std::atomic<int> internal_seeks_{0};
   bool live_ = false;
-  int64_t origin_ms_ = 0;  // live: media time shown as position 0
+  int64_t origin_ms_ = 0;       // presentation time shown as position 0 (live: window start)
+  int64_t live_window_ms_ = 0;  // live: time-shift window length at load
+  std::map<std::pair<const Representation *, int>, Track> tracks_;  // by representation and period part
+  std::set<std::string> licensed_;  // Widevine pssh boxes with a licence
   size_t cur_ = 0;
   double speed_bps_ = 0;
   Cdm cdm_;

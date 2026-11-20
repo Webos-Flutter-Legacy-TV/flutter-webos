@@ -233,8 +233,8 @@ void parseDops(const uint8_t *b, size_t n, Track *t) {
 }
 
 void parseSampleEntry(const uint8_t *e, size_t n, const uint8_t *type, Track *t) {
-  bool v = is(type, "avc1") || is(type, "avc3") || is(type, "hev1") || is(type, "hvc1") || is(type, "vp09") ||
-           is(type, "encv");
+  bool v = is(type, "avc1") || is(type, "avc3") || is(type, "hev1") || is(type, "hvc1") || is(type, "dvh1") ||
+           is(type, "dvhe") || is(type, "vp09") || is(type, "av01") || is(type, "encv");
   bool a = is(type, "mp4a") || is(type, "ac-3") || is(type, "ec-3") || is(type, "Opus") || is(type, "enca");
   if (!v && !a) return;
   size_t skip = v ? 78 : 28;
@@ -246,6 +246,11 @@ void parseSampleEntry(const uint8_t *e, size_t n, const uint8_t *type, Track *t)
     if (is(ct, "avcC")) parseAvcC(b, len, t);
     if (is(ct, "hvcC")) parseHvcC(b, len, t);
     if (is(ct, "vpcC")) parseVpcC(b, len, t);
+    if (is(ct, "av1C") && len > 4) t->av1_config.assign(reinterpret_cast<const char *>(b + 4), len - 4);
+    if ((is(ct, "dvcC") || is(ct, "dvvC")) && len >= 4) {
+      t->dv_profile = b[2] >> 1;
+      t->dv_el = (b[3] >> 1) & 1;
+    }
     if (is(ct, "colr")) parseColr(b, len, t);
     if (is(ct, "mdcv")) parseMdcv(b, len, t);
     if (is(ct, "clli")) parseClli(b, len, t);
@@ -269,8 +274,9 @@ void parseSampleEntry(const uint8_t *e, size_t n, const uint8_t *type, Track *t)
     });
   });
   if (original == "avc1" || original == "avc3") t->codec = "H264";
-  else if (original == "hev1" || original == "hvc1") t->codec = "H265";
+  else if (original == "hev1" || original == "hvc1" || original == "dvh1" || original == "dvhe") t->codec = "H265";
   else if (original == "vp09") t->codec = "VP9";
+  else if (original == "av01") t->codec = "AV1";
   else if (original == "mp4a") t->codec = "AAC";
   else if (original == "ac-3") t->codec = "AC3";
   else if (original == "ec-3") t->codec = "AC3 PLUS";
@@ -325,13 +331,26 @@ bool parseInit(const std::string &init, Track *t, std::string *pssh) {
   return found;
 }
 
-bool parseSegment(const std::string &seg, const Track &track, std::vector<Sample> *out) {
+bool parseSegment(const std::string &seg, const Track &track, std::vector<Sample> *out, std::vector<std::string> *pssh) {
   const uint8_t *p = reinterpret_cast<const uint8_t *>(seg.data());
   bool ok = true;
   boxes(p, seg.size(), p, [&](const uint8_t *moof, size_t moof_len, const uint8_t *type, size_t moof_off) {
     if (!is(type, "moof")) return;
-    boxes(moof, moof_len, p, [&](const uint8_t *traf, size_t tlen, const uint8_t *tt, size_t) {
+    boxes(moof, moof_len, p, [&](const uint8_t *traf, size_t tlen, const uint8_t *tt, size_t toff) {
+      if (pssh && is(tt, "pssh") && tlen >= 20 && memcmp(traf + 4, kWidevineSystemId, 16) == 0)
+        pssh->push_back(seg.substr(toff, tlen + 8));
       if (!is(tt, "traf")) return;
+      // 'seig' sample group entries (key rotation): per group protection,
+      // IV size and key id; sample -> group from 'sbgp'.
+      struct Seig {
+        bool prot;
+        uint8_t iv_size;
+        std::string kid, constant_iv;
+      };
+      std::vector<Seig> groups;
+      std::vector<uint32_t> sample_group;  // 0: none, else 1-based index (traf-local)
+      const uint8_t *senc = nullptr;
+      size_t senc_len = 0;
       uint32_t track_id = 0, dflt_dur = track.default_duration, dflt_size = track.default_size,
                dflt_flags = track.default_flags;
       uint64_t base_dts = 0;
@@ -394,32 +413,81 @@ bool parseSegment(const std::string &seg, const Track &track, std::vector<Sample
           have_next = true;
         } else if (is(bt, "senc") && len >= 8) {
           have_senc = true;
-          uint32_t flags = be32(b) & 0xffffff, count = be32(b + 4);
+          senc = b;
+          senc_len = len;
+        } else if (is(bt, "sgpd") && len >= 12 && is(b + 4, "seig")) {
+          int version = b[0];
           size_t o = 8;
+          uint32_t default_len = 0;
+          if (version == 1) { default_len = be32(b + o); o += 4; }
+          if (version >= 2) o += 4;
+          if (o + 4 > len) return;
+          uint32_t count = be32(b + o);
+          o += 4;
           for (uint32_t i = 0; i < count; i++) {
-            if (o + track.iv_size > len) break;
-            ivs.emplace_back(reinterpret_cast<const char *>(b + o), track.iv_size);
-            o += track.iv_size;
-            std::vector<std::pair<uint32_t, uint32_t>> ss;
-            if (flags & 0x02) {
-              if (o + 2 > len) break;
-              uint16_t n = be16(b + o);
-              o += 2;
-              for (uint16_t k = 0; k < n && o + 6 <= len; k++, o += 6) ss.emplace_back(be16(b + o), be32(b + o + 2));
+            uint32_t elen = default_len;
+            if (version == 1 && default_len == 0) { if (o + 4 > len) break; elen = be32(b + o); o += 4; }
+            if (o + 20 > len) break;
+            Seig g;
+            g.prot = b[o + 2] != 0;
+            g.iv_size = b[o + 3];
+            g.kid.assign(reinterpret_cast<const char *>(b + o + 4), 16);
+            size_t used = 20;
+            if (g.prot && g.iv_size == 0 && o + 21 <= len) {
+              uint8_t n = b[o + 20];
+              if (o + 21 + n <= len) g.constant_iv.assign(reinterpret_cast<const char *>(b + o + 21), n);
+              used = 21 + n;
             }
-            subs.push_back(std::move(ss));
+            groups.push_back(g);
+            o += elen ? elen : used;
+          }
+        } else if (is(bt, "sbgp") && len >= 12 && is(b + 4, "seig")) {
+          size_t o = 8 + (b[0] == 1 ? 4 : 0);
+          if (o + 4 > len) return;
+          uint32_t count = be32(b + o);
+          o += 4;
+          for (uint32_t i = 0; i < count && o + 8 <= len; i++, o += 8) {
+            uint32_t n = be32(b + o), idx = be32(b + o + 4);
+            if (idx > 0x10000) idx -= 0x10000;  // traf-local description
+            sample_group.insert(sample_group.end(), n, idx);
           }
         }
       });
       if (track_id != track.id) return;
-      bool protected_track = !track.scheme.empty() && (have_senc || !track.constant_iv.empty());
+      auto group_of = [&](size_t i) -> const Seig * {
+        if (i >= sample_group.size() || sample_group[i] == 0 || sample_group[i] > groups.size()) return nullptr;
+        return &groups[sample_group[i] - 1];
+      };
+      if (senc) {
+        uint32_t flags = be32(senc) & 0xffffff, count = be32(senc + 4);
+        size_t o = 8;
+        for (uint32_t i = 0; i < count; i++) {
+          const Seig *g = group_of(i);
+          uint8_t iv_size = g ? (g->prot ? g->iv_size : 0) : track.iv_size;
+          if (o + iv_size > senc_len) break;
+          ivs.emplace_back(reinterpret_cast<const char *>(senc + o), iv_size);
+          o += iv_size;
+          std::vector<std::pair<uint32_t, uint32_t>> ss;
+          if (flags & 0x02) {
+            if (o + 2 > senc_len) break;
+            uint16_t n = be16(senc + o);
+            o += 2;
+            for (uint16_t k = 0; k < n && o + 6 <= senc_len; k++, o += 6) ss.emplace_back(be16(senc + o), be32(senc + o + 2));
+          }
+          subs.push_back(std::move(ss));
+        }
+      }
+      bool protected_track = !track.scheme.empty() && (have_senc || !track.constant_iv.empty() || !groups.empty());
       for (size_t i = 0; i < samples.size(); i++) {
         Sample &s = samples[i];
         if (s.offset + s.size > seg.size()) { ok = false; break; }
-        if (protected_track) {
+        const Seig *g = group_of(i);
+        if (protected_track && (!g || g->prot)) {
           s.encrypted = true;
-          s.iv = i < ivs.size() && !ivs[i].empty() ? ivs[i] : track.constant_iv;
+          const std::string &civ = g && !g->constant_iv.empty() ? g->constant_iv : track.constant_iv;
+          s.iv = i < ivs.size() && !ivs[i].empty() ? ivs[i] : civ;
           s.iv.resize(16, '\0');
+          if (g) s.kid = g->kid;
           if (i < subs.size() && !subs[i].empty()) s.subsamples = subs[i];
           else s.subsamples.emplace_back(0, s.size);
         }

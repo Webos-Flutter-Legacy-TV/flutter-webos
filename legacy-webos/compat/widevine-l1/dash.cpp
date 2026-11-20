@@ -1,5 +1,6 @@
 #include "dash.h"
 
+#include <algorithm>
 #include <ctime>
 
 #include <cmath>
@@ -195,15 +196,34 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
     tsb = isoDuration(attr(mpd.attrs, "timeShiftBufferDepth"));
     if (tsb <= 0) tsb = 60;
   }
-  std::string base = mpd_url;
-  for (auto &b : children(x, mpd.body, mpd.end, "BaseURL")) base = resolve(base, text(x, b));
+  std::string mpd_base = mpd_url;
+  for (auto &b : children(x, mpd.body, mpd.end, "BaseURL")) mpd_base = resolve(mpd_base, text(x, b));
   auto periods = children(x, mpd.body, mpd.end, "Period");
   if (periods.empty()) { *err = "no Period"; return false; }
-  const Elem &period = periods[out->dynamic ? periods.size() - 1 : 0];
-  if (!out->dynamic && out->duration <= 0) out->duration = isoDuration(attr(period.attrs, "duration"));
+  // Period start and duration: their attributes, else from the neighbours.
+  size_t np = periods.size();
+  std::vector<double> starts(np, 0), durs(np, 0);
+  for (size_t i = 0; i < np; i++) durs[i] = isoDuration(attr(periods[i].attrs, "duration"));
+  for (size_t i = 0; i < np; i++) {
+    std::string st = attr(periods[i].attrs, "start");
+    starts[i] = !st.empty() ? isoDuration(st) : i ? starts[i - 1] + durs[i - 1] : 0;
+    if (durs[i] <= 0) {
+      std::string next = i + 1 < np ? attr(periods[i + 1].attrs, "start") : "";
+      if (!next.empty()) durs[i] = isoDuration(next) - starts[i];
+      else if (out->duration > 0) durs[i] = out->duration - starts[i];
+    }
+  }
+  if (!out->dynamic && out->duration <= 0) out->duration = starts[np - 1] + durs[np - 1];
+  // Live: the current (last) period only.
+  size_t first_period = out->dynamic ? np - 1 : 0;
+  for (size_t pi = first_period; pi < np; pi++) {
+  const Elem &period = periods[pi];
+  double period_start = starts[pi], period_dur = durs[pi];
   // Live: seconds since the period started (segments must have ended by then).
-  double live_now = out->dynamic ? now - out->availability_start - isoDuration(attr(period.attrs, "start")) : 0;
+  double live_now = out->dynamic ? now - out->availability_start - period_start : 0;
+  std::string base = mpd_base;
   for (auto &b : children(x, period.body, period.end, "BaseURL")) base = resolve(base, text(x, b));
+  std::vector<Representation> preps;
 
   int group = -1;
   for (auto &as : children(x, period.body, period.end, "AdaptationSet")) {
@@ -255,6 +275,7 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
       for (auto &b : children(x, r.body, r.end, "BaseURL")) rbase = resolve(rbase, text(x, b));
 
       auto sb = children(x, r.body, r.end, "SegmentBase");
+      double part_offset = period_start;
       TemplateInfo tpl = as_tpl;
       for (auto &st : children(x, r.body, r.end, "SegmentTemplate")) {
         tpl.present = true;
@@ -269,12 +290,15 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
         for (auto &in : children(x, sb[0].body, sb[0].end, "Initialization"))
           range(attr(in.attrs, "range"), &rep.init.first, &rep.init.last);
         if (rep.index_first < 0 || out->dynamic) continue;  // no index, or live: unsupported
+        double sb_ts = atof(attr(sb[0].attrs, "timescale").c_str());
+        if (sb_ts > 0) part_offset -= atof(attr(sb[0].attrs, "presentationTimeOffset").c_str()) / sb_ts;
       } else if (tpl.present) {
         double timescale = atof(attr(tpl.attrs, "timescale").c_str());
         if (timescale <= 0) timescale = 1;
         uint64_t number = attr(tpl.attrs, "startNumber").empty() ? 1 : strtoull(attr(tpl.attrs, "startNumber").c_str(), nullptr, 10);
         std::string init_t = attr(tpl.attrs, "initialization"), media_t = attr(tpl.attrs, "media");
         double pto = atof(attr(tpl.attrs, "presentationTimeOffset").c_str());
+        part_offset = period_start - pto / timescale;
         rep.init.url = resolve(rbase, fill(init_t, rep.id, rep.bandwidth, 0, 0));
         if (!tpl.timeline.empty()) {
           uint64_t t = 0;
@@ -282,13 +306,13 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
             if (!attr(s.attrs, "t").empty()) t = strtoull(attr(s.attrs, "t").c_str(), nullptr, 10);
             uint64_t d = strtoull(attr(s.attrs, "d").c_str(), nullptr, 10);
             long r = atol(attr(s.attrs, "r").c_str());
-            double end = out->dynamic ? live_now * timescale + pto : out->duration * timescale;
+            double end = (out->dynamic ? live_now : period_dur) * timescale + pto;
             if (r < 0) r = d ? static_cast<long>(std::ceil((end - t) / d)) - 1 : 0;
             for (long k = 0; k <= r; k++) {
               if (out->dynamic && (t + d - pto) / timescale > live_now) break;  // not available yet
               Segment seg;
               seg.url = resolve(rbase, fill(media_t, rep.id, rep.bandwidth, number++, t));
-              seg.start = t / timescale;
+              seg.start = (t - pto) / timescale + period_start;
               seg.duration = d / timescale;
               rep.segments.push_back(seg);
               t += d;
@@ -308,13 +332,13 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
             if (first > last) first = last;
             count = last + 1;
           } else {
-            if (out->duration <= 0) continue;
-            count = static_cast<size_t>(std::ceil(out->duration * timescale / d));
+            if (period_dur <= 0) continue;
+            count = static_cast<size_t>(std::ceil(period_dur * timescale / d));
           }
           for (size_t k = first; k < count; k++) {
             Segment seg;
             seg.url = resolve(rbase, fill(media_t, rep.id, rep.bandwidth, number + k, static_cast<uint64_t>(pto + k * d)));
-            seg.start = (pto + k * d) / timescale;
+            seg.start = k * d / timescale + period_start;
             seg.duration = d / timescale;
             rep.segments.push_back(seg);
           }
@@ -322,14 +346,52 @@ bool parseMpd(const std::string &x, const std::string &mpd_url, Manifest *out, s
       } else {
         continue;
       }
-      out->reps.push_back(rep);
+      Part part;
+      part.init = rep.init;
+      part.index_first = rep.index_first;
+      part.index_last = rep.index_last;
+      part.offset = part_offset;
+      part.pssh_b64 = rep.pssh_b64;
+      rep.parts.push_back(part);
+      preps.push_back(rep);
     }
+  }
+  if (pi == first_period) {
+    out->reps = std::move(preps);
+    continue;
+  }
+  // Later periods: give every representation the closest one of this
+  // period (same content; then id, language, codec, AdaptationSet,
+  // bandwidth).
+  for (auto &r : out->reps) {
+    const Representation *best = nullptr;
+    double best_score = -1e18;
+    for (auto &q : preps) {
+      if (q.content != r.content) continue;
+      double sc = 0;
+      if (q.id == r.id) sc += 100;
+      if (q.lang == r.lang) sc += 20;
+      if (q.codecs.compare(0, 4, r.codecs, 0, 4) == 0) sc += 10;
+      if (q.group == r.group) sc += 5;
+      sc -= std::fabs(std::log((q.bandwidth + 1.0) / (r.bandwidth + 1.0)));
+      if (sc > best_score) { best_score = sc; best = &q; }
+    }
+    if (!best) continue;  // nothing of this kind in the period: a gap
+    int part = static_cast<int>(r.parts.size());
+    r.parts.push_back(best->parts[0]);
+    for (Segment sg : best->segments) {
+      sg.part = part;
+      r.segments.push_back(sg);
+    }
+  }
   }
   if (out->reps.empty()) { *err = "no supported representation"; return false; }
   return true;
 }
 
-bool loadIndex(Representation *rep, const std::string &sidx) {
+bool loadIndex(Representation *rep, const std::string &sidx, int part) {
+  if (part < 0 || part >= static_cast<int>(rep->parts.size())) return false;
+  Part &pt = rep->parts[part];
   const uint8_t *s = reinterpret_cast<const uint8_t *>(sidx.data());
   auto be32 = [](const uint8_t *p) { return (uint32_t(p[0]) << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; };
   if (sidx.size() < 32 || memcmp(s + 4, "sidx", 4) != 0) return false;
@@ -344,22 +406,30 @@ bool loadIndex(Representation *rep, const std::string &sidx) {
   uint32_t refs = be32(q) & 0xffff;
   q += 4;
   if (sidx.size() < size_t(q - s) + 12u * refs || !timescale) return false;
-  uint64_t off = static_cast<uint64_t>(rep->index_first) + box + first_offset;
+  uint64_t off = static_cast<uint64_t>(pt.index_first) + box + first_offset;
   uint64_t t = ept;
-  rep->segments.clear();
+  std::vector<Segment> segs;
   for (uint32_t i = 0; i < refs; i++, q += 12) {
     uint32_t size = be32(q) & 0x7fffffff, dur = be32(q + 4);
     Segment seg;
-    seg.url = rep->init.url;
+    seg.url = pt.init.url;
     seg.first = static_cast<int64_t>(off);
     seg.last = static_cast<int64_t>(off + size - 1);
-    seg.start = double(t) / timescale;
+    seg.start = double(t) / timescale + pt.offset;
     seg.duration = double(dur) / timescale;
-    rep->segments.push_back(seg);
+    seg.part = part;
+    segs.push_back(seg);
     off += size;
     t += dur;
   }
-  return !rep->segments.empty();
+  if (segs.empty()) return false;
+  // Replace this part's segments, keep the list in time order.
+  auto &all = rep->segments;
+  all.erase(std::remove_if(all.begin(), all.end(), [&](const Segment &s) { return s.part == part; }), all.end());
+  all.insert(all.end(), segs.begin(), segs.end());
+  std::stable_sort(all.begin(), all.end(), [](const Segment &a, const Segment &b) { return a.start < b.start; });
+  pt.indexed = true;
+  return true;
 }
 
 }  // namespace wvl1

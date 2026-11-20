@@ -49,11 +49,48 @@ const cases = <Case>[
       'https://storage.googleapis.com/shaka-demo-assets/angel-one-widevine/dash.mpd',
       VideoFormat.dash,
       DrmConfigs(type: DrmType.widevine, licenseServerUrl: 'https://cwip-shaka-proxy.appspot.com/no_auth')),
+  // Axinom public test vector: two periods with different keys, separate
+  // keys per resolution tier and for audio (licence token from Axinom's
+  // public test vector list).
+  Case('widevine_multiperiod',
+      'https://media.axprod.net/TestVectors/v7-MultiDRM-MultiKey-MultiPeriod/Manifest_1080p.mpd',
+      VideoFormat.dash,
+      DrmConfigs(type: DrmType.widevine, licenseCallback: _axinomLicense)),
   Case('playready_smooth',
       'https://test.playready.microsoft.com/smoothstreaming/SSWSS720H264PR/SuperSpeedway_720.ism/Manifest',
       VideoFormat.ss,
       DrmConfigs(type: DrmType.playready, licenseServerUrl: 'https://test.playready.microsoft.com/service/rightsmanager.asmx')),
 ];
+
+const _axinomToken =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2ZXJzaW9uIjoxLCJjb21fa2V5X2lkIjoiYjMzNjRlYjUtNTFmNi00YWUzLThjOTgtMzNjZWQ1ZTMxYzc4IiwibWVzc2FnZSI6eyJ0eXBlIjoiZW50aXRsZW1lbnRfbWVzc2FnZSIsInZlcnNpb24iOjIsImxpY2Vuc2UiOnsiYWxsb3dfcGVyc2lzdGVuY2UiOnRydWV9LCJjb250ZW50X2tleXNfc291cmNlIjp7ImlubGluZSI6W3siaWQiOiIwODcyNzg2ZS1mOWU3LTQ2NWYtYTNhMi00ZTViMGVmOGZhNDUiLCJlbmNyeXB0ZWRfa2V5IjoiUHc2K2VFWU5jdmpZYmZzaDNYM2ZtZz09IiwidXNhZ2VfcG9saWN5IjoiUG9saWN5IEEifSx7ImlkIjoiYzE0ZjA3MDktZjJiOS00NDI3LTkxNmItNjFiNTI1ODY1MDZhIiwiZW5jcnlwdGVkX2tleSI6Ii8xK2ZOaWgzOG1xUnY0eWNZem50L3c9PSIsInVzYWdlX3BvbGljeSI6IlBvbGljeSBBIn0seyJpZCI6IjhiMDI5ZTUxLWQ1NmEtNDRiZC05MTBmLWQ0YjVmZDkwZmJhMiIsImVuY3J5cHRlZF9rZXkiOiJrcTBKdVpFanBGTjhzYVRtdDU2ME9nPT0iLCJ1c2FnZV9wb2xpY3kiOiJQb2xpY3kgQSJ9LHsiaWQiOiIyZDZlOTM4Ny02MGNhLTQxNDUtYWVjMi1jNDA4MzdiNGIwMjYiLCJlbmNyeXB0ZWRfa2V5IjoiVGNSUWVCV3hFb0hPS0hyYWQ0U2VWUT09IiwidXNhZ2VfcG9saWN5IjoiUG9saWN5IEEifSx7ImlkIjoiZGUwMmYwN2YtYTA5OC00ZWUwLWI1NTYtOTA3YzBkMTdmYmJjIiwiZW5jcnlwdGVkX2tleSI6InBvZW5jUzdHZ21lR0Zlb0o2UEVBVFE9PSIsInVzYWdlX3BvbGljeSI6IlBvbGljeSBBIn0seyJpZCI6IjkxNGU2OWY0LTBhYjMtNDUzNC05ZTlmLTk4NTM2MTVlMjZmNiIsImVuY3J5cHRlZF9rZXkiOiJlaUkvTXNsbHJRNHdDbFJUL0xObUNBPT0iLCJ1c2FnZV9wb2xpY3kiOiJQb2xpY3kgQSJ9LHsiaWQiOiJkYTQ0NDVjMi1kYjVlLTQ4ZWYtYjA5Ni0zZWYzNDdiMTZjN2YiLCJlbmNyeXB0ZWRfa2V5IjoiMncremR2cXJwRFYzeFIwYkp5NHVndz09IiwidXNhZ2VfcG9saWN5IjoiUG9saWN5IEEifSx7ImlkIjoiMjlmMDVlOGYtYTFhZS00NmU0LTgwZTktMjJkY2Q0NGNkN2ExIiwiZW5jcnlwdGVkX2tleSI6Ii94bFNIcHh3cXUzZ28vZ2xwbVNnYVE9PSIsInVzYWdlX3BvbGljeSI6IlBvbGljeSBBIn0seyJpZCI6IjY5ZmU3MDc3LWRhZGQtNGI1NS05NmNkLWMzZWRiMzk5MTg1MyIsImVuY3J5cHRlZF9rZXkiOiJ6dTZpdXpOMnBzaTBaU3hRaUFUa1JRPT0iLCJ1c2FnZV9wb2xpY3kiOiJQb2xpY3kgQSJ9XX0sImNvbnRlbnRfa2V5X3VzYWdlX3BvbGljaWVzIjpbeyJuYW1lIjoiUG9saWN5IEEiLCJwbGF5cmVhZHkiOnsibWluX2RldmljZV9zZWN1cml0eV9sZXZlbCI6MTUwLCJwbGF5X2VuYWJsZXJzIjpbIjc4NjYyN0Q4LUMyQTYtNDRCRS04Rjg4LTA4QUUyNTVCMDFBNyJdfX1dfX0.R7aHvOHPBV-f2VfjeQC0AOi9axZI_xGIlpB-OScAzy4';
+
+// Licence callback for the Axinom test vector: its licence server wants the
+// test vector's token in the X-AxDRM-Message header.
+Future<Uint8List> _axinomLicense(Uint8List challenge) async {
+  log('axinom licenseCallback: challenge ${challenge.length} bytes');
+  final client = HttpClient();
+  try {
+    // The L1 route first asks for the licence server's service certificate
+    // (the 2-byte request 08 04); Axinom serves it at its own address.
+    if (challenge.length == 2 && challenge[0] == 8 && challenge[1] == 4) {
+      final res = await (await client.getUrl(Uri.parse('https://drm-widevine-licensing.axprod.net/ServiceCertificate'))).close();
+      final bytes = await res.fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+      log('axinom service certificate: HTTP ${res.statusCode}, ${bytes.length} bytes');
+      return Uint8List.fromList(bytes);
+    }
+    final req = await client.postUrl(Uri.parse('https://drm-widevine-licensing.axprod.net/AcquireLicense'));
+    req.headers.contentType = ContentType('application', 'octet-stream');
+    req.headers.set('X-AxDRM-Message', _axinomToken);
+    req.add(challenge);
+    final res = await req.close();
+    final bytes = await res.fold<List<int>>(<int>[], (a, b) => a..addAll(b));
+    log('axinom licenseCallback: HTTP ${res.statusCode}, ${bytes.length} bytes');
+    return Uint8List.fromList(bytes);
+  } finally {
+    client.close();
+  }
+}
 
 // App-side licence acquisition (licenseCallback path): POST the CDM
 // challenge to Google's Widevine test proxy and return the licence bytes.
@@ -122,6 +159,15 @@ class _DrmPageState extends State<DrmPage> {
         await c.initialize().timeout(const Duration(seconds: 30));
         setState(() => _c = c);
         await c.play();
+        if (k.name == 'widevine_multiperiod') {
+          // Into the second period (starts at 734 s), whose keys differ.
+          await Future.delayed(const Duration(seconds: 5));
+          log('seek from ${c.value.position.inMilliseconds}ms to 740000ms (period 2)');
+          await c.seekTo(const Duration(seconds: 740));
+          await Future.delayed(const Duration(seconds: 8));
+          log('period 2: position ${c.value.position.inMilliseconds}ms');
+          log('STEP multiperiod_done');
+        }
         if (k.name == 'widevine_audio_switch') {
           // Multi-language stream: list the audio tracks, switch to the
           // second one and check that playback keeps going.
