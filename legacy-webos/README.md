@@ -94,8 +94,13 @@ Install it like any IPK (`ares-install`, or `tools/tv-install.sh` on a rooted TV
 
 ### Renderer and frame rate
 
-LG's build renders with Skia unless `webos/meta/flutter-conf.json` enables
-Impeller:
+LG's build renders with Skia. The legacy package turns on **Impeller** and
+**two window surfaces** (`compat-dual-surface`) unless the app sets them:
+`"enable-impeller": false` in `webos/meta/flutter-conf.json` or an empty
+`webos/meta/compat-single-surface` turns them off. In a real app (a Jellyfin
+client on webOS 6.5.3) the two together halved GPU time per frame (17.5 to
+10 ms) and cut frames over 20 ms from 22% to 5%. How to measure an app and
+what else helped: [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ```json
 { "engine-switches": { "enable-impeller": true } }
@@ -124,7 +129,7 @@ Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
   frames, any stage). That is the capture service, not the screen: in a run
   watched on the TV the video stayed visible while its screenshot was black,
   and the placement requests are identical in black and good runs.
-- **`compat-dual-surface`** is opt-in. With Impeller, an external texture
+- **`compat-dual-surface`** is on by default in legacy packages. With Impeller, an external texture
   (a `webos_image_texture` image) is drawn on the window's own surface but
   not on the second one, although both share one GL context and full
   redraws make no difference (#3; cause not found). The shim therefore uses
@@ -307,6 +312,8 @@ the key is not `~/.ssh/lg_webos`.
 | `tools/tv-install.sh`, `tools/tv-shot.sh` | Install an IPK; take a screenshot |
 | `tools/tv-key/tv-key.c` | Inject remote key presses into evdev |
 | `tools/perf-variant.sh` | Run `tests/compat_test` with a resolution / Impeller setting |
+| `tools/perf-summary.py` | Summarise a `compat.log` from `legacy_perf_probe` or `compat-log-fps` (frame, key and image timings) |
+| `packages/legacy_perf_probe` | Frame, key and image timings from inside an app, in builds with `--dart-define=LEGACY_PERF_PROBE=true` (see docs/PERFORMANCE.md) |
 | `tools/video-scenario.sh`, `tools/video-probe.sh` | Scripted video_player test; probe one URL |
 | `tools/media-server.sh` | Download the test media once and serve it on the LAN (with HTTP Range, for seeking); build test apps with `--dart-define=MEDIA_BASE=http://<host>:8099`, or set `MEDIA_BASE` for `video-scenario.sh` |
 
@@ -315,10 +322,14 @@ in `compat.log` (next to the installed binary):
 `compat-log-globals` (Wayland globals), `compat-log-keys` (raw Wayland key
 codes), `compat-back-as-key` (deliver Back as the embedder's key event instead
 of `popRoute`), `compat-log-ndl` (raw NDL media events),
-`compat-log-pmlog` (plugin PmLog messages), `compat-log-swap` (per 120
+`compat-log-pmlog` (plugin PmLog messages), `compat-log-pmlog-all` (every
+PmLog context, including the engine's: renderer and switches in use),
+`compat-log-fps` (per 120 animating frames: frame rate and present
+intervals, without slowing the app), `compat-log-swap` (per 120
 frames: GPU time, time blocked in the swap and between presents, waits over
 2 ms by thread and caller, buffer releases; adds a `glFinish` per frame),
-`compat-dual-surface` (alternate two EGL surfaces, see "Renderer and frame rate"),
+`compat-dual-surface` (alternate two EGL surfaces, see "Renderer and frame rate";
+legacy default) and `compat-single-surface` (turn that default off),
 `compat-log-exported` (video window placement requests and their regions),
 `compat-swap0` (EGL swap interval 0; no effect on webOS 6.5.3, whose Mali
 configs only allow interval 0). In `tests/compat_test`, `compat-perf` adds

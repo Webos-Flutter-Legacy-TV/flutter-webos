@@ -7,6 +7,27 @@ tag on both.
 
 ## Unreleased
 
+- Performance defaults: legacy packages turn on Impeller and two window
+  surfaces (`compat-dual-surface`) unless the app sets them (opt out with
+  `"enable-impeller": false` or `webos/meta/compat-single-surface`). In a
+  Jellyfin client on webOS 6.5.3 this halved GPU time per frame (17.5 to
+  10 ms); the Movies grid went from about 29 to 60 frames per second.
+- `docs/PERFORMANCE.md`: how to measure an app on the TV and what made frames
+  expensive (blurred shadows, full-screen translucent layers, oversized
+  images); what did not help (damage regions).
+- `packages/legacy_perf_probe`: frame (build vs raster), remote-key and
+  image timings in `compat.log`, only in builds with
+  `--dart-define=LEGACY_PERF_PROBE=true`; `tools/perf-summary.py` summarises
+  a log.
+- Shim switches `compat-log-fps` (present rate without slowing the app) and
+  `compat-log-pmlog-all` (the engine's own messages, e.g. the renderer).
+- Build tool: `false` for an engine switch in `flutter-conf.json` now removes
+  it, so `"impeller-lazy-shader-mode": false` compiles shaders at start (LG's
+  runner adds the switch with Impeller and ignored `false`). Measured: one
+  slow first-scroll frame less, but a 3 s slower start; off by default.
+- Build tool: `flutter-webos analyze lib` (or any non-Dart argument) no
+  longer rewrites `webos/flutter/main.dart` with an import of that folder.
+
 - Hardware (L1) Widevine on older webOS (opt-in `compat-widevine-l1`,
   experimental): `compat/widevine-l1` plays Widevine DASH through the TV's
   CDM wrapper and its StarfishMediaAPIs player on the secure video path, as

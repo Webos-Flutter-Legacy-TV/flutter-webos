@@ -48,14 +48,14 @@ is for webOS 4-6 only; see the README section "webOS 4". For **webOS 3**
 
 ## 3. Configure
 
-Renderer, in `webos/meta/flutter-conf.json`: enable Impeller (2-3x faster
-than Skia on the webOS 6 GPU). Apps with `video_player` need the plugins
-fork (7a53a97 or later), which keeps a moved or resized video visible. See
-the README section "Renderer and frame rate".
-
-```json
-{ "engine-switches": { "enable-impeller": true } }
-```
+Renderer: legacy packages use Impeller with two window surfaces unless the
+app says otherwise (`"enable-impeller": false` in
+`webos/meta/flutter-conf.json`, or an empty `webos/meta/compat-single-surface`).
+Together they halve GPU time per frame on webOS 6. Apps with `video_player`
+need the plugins fork (7a53a97 or later), which keeps a moved or resized video
+visible. See the README section "Renderer and frame rate", and
+[PERFORMANCE.md](PERFORMANCE.md) to measure your app and for what makes
+frames expensive on these TVs.
 
 Optional, as empty files in `webos/meta/`:
 
@@ -63,7 +63,7 @@ Optional, as empty files in `webos/meta/`:
 | --- | --- |
 | `compat-widevine-l1` | Widevine at the hardware security level through the TV's own CDM and player (see README; opt-in, experimental, research only: not for published apps) |
 | `compat-back-as-key` | Deliver Back as a key event instead of a route pop |
-| `compat-dual-surface` | Faster frames (removes a ~10 ms driver wait per frame); off automatically while media is loaded or an external texture is registered |
+| `compat-single-surface` | Turn off the legacy default `compat-dual-surface` (two surfaces remove a ~10 ms driver wait per frame; the shim uses one by itself while media is loaded or an external texture is registered) |
 | `compat-log-*`, `compat-swap0` | Debug output, see README |
 
 ## 4. Plugins

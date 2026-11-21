@@ -97,6 +97,32 @@ if [ -e "$STAGE/compat-widevine-l1" ]; then
   [ -e "$FW/compat/widevine-l1/out/libwv-l1.so" ] || { echo "libwv-l1.so not built (needs the LG NDK)" >&2; exit 1; }
   cp "$FW/compat/widevine-l1/out/libwv-l1.so" "$STAGE/lib/compat/"
 fi
+# Renderer defaults for older TVs, applied only where the app says nothing.
+# On an LG C1 (webOS 6) Impeller with two window surfaces drew frames in about
+# half the GPU time of Skia (docs/PERFORMANCE.md).
+#  - Impeller: on unless flutter-conf.json sets "enable-impeller" (true or false).
+#  - Two surfaces (compat-dual-surface): on unless webos/meta has
+#    compat-single-surface. The shim falls back to one surface by itself while
+#    media is loaded or an external texture is registered.
+python3 - "$STAGE/flutter-conf.json" <<'EOF'
+import json, os, sys
+p = sys.argv[1]
+d = json.load(open(p)) if os.path.exists(p) else {}
+sw = d.setdefault("engine-switches", {})
+if "enable-impeller" in sw:
+    print("renderer: Impeller %s (flutter-conf.json)" % ("on" if sw["enable-impeller"] is True else "off"))
+else:
+    sw["enable-impeller"] = True
+    json.dump(d, open(p, "w"), indent=2)
+    print("renderer: Impeller on (legacy default; \"enable-impeller\": false in flutter-conf.json turns it off)")
+EOF
+if [ -e "$STAGE/compat-single-surface" ]; then
+  rm -f "$STAGE/compat-dual-surface" "$STAGE/compat-single-surface"
+  echo "renderer: one window surface (compat-single-surface)"
+elif [ ! -e "$STAGE/compat-dual-surface" ]; then
+  : > "$STAGE/compat-dual-surface"
+  echo "renderer: two window surfaces (legacy default; webos/meta/compat-single-surface turns it off)"
+fi
 for f in "$STAGE"/lib/*.so; do
   "$PATCHELF" --force-rpath --set-rpath '$ORIGIN/compat:$ORIGIN' "$f"
 done

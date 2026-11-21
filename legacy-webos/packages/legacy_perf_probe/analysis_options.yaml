@@ -1,0 +1,4 @@
+# Default Dart analysis (the repository root's options are the build tool's own style rules).
+analyzer:
+  language:
+    strict-casts: true

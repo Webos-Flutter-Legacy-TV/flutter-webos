@@ -8,6 +8,8 @@
 set -euo pipefail
 FW="$(cd "$(dirname "$0")/.." && pwd)"
 LABEL="$1"; RES="${2:-}"; IMP="${3:-false}"; SWAP0="${4:-false}"; SWITCHES="${5:-}"
+# The legacy packager turns on two surfaces by default; measure one unless asked.
+case " $SWITCHES " in *" compat-dual-surface "*) ;; *) SWITCHES="$SWITCHES compat-single-surface" ;; esac
 APP="$FW/tests/compat_test"
 . "$FW/env.sh"
 

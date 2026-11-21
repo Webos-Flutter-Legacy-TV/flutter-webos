@@ -1,0 +1,16 @@
+name: legacy_perf_probe
+description: Frame, key and image timings for Flutter apps on older webOS TVs, written to the app's log.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+  flutter: '>=3.38.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
