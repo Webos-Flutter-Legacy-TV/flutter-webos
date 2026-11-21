@@ -149,6 +149,12 @@ mixin WebosExtension on FlutterCommand {
 ///
 /// Source: [WebEntrypointTarget.build] in `web.dart`
 Future<String> _createEntrypoint(FlutterProject project, String targetFile) async {
+  // Commands such as `analyze lib` take their first argument as the target:
+  // only a Dart file can be the app's entrypoint, so leave the generated
+  // main.dart alone otherwise (it used to import the folder by file URI).
+  if (!targetFile.endsWith('.dart') || !globals.fs.isFileSync(targetFile)) {
+    return targetFile;
+  }
   final List<WebosPlugin> dartPlugins = await findWebosPlugins(project, dartOnly: true);
   if (dartPlugins.isEmpty) {
     return targetFile;

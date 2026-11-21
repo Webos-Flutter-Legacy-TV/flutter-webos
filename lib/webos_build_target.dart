@@ -459,6 +459,26 @@ class NativeBundle {
 
   /// Copies [source] to [target] only when the content differs: unchanged
   /// compile inputs keep their mtimes, so make/ninja sees them as up to date.
+  /// LG's runner only adds engine switches from flutter-conf.json: `false`
+  /// is ignored, so a switch the runner adds itself cannot be turned off.
+  /// In particular `--impeller-lazy-shader-mode` comes with Impeller, and
+  /// `"impeller-lazy-shader-mode": false` should compile shaders up front
+  /// instead of on first use. Make `false` remove the switch. The source is
+  /// left alone if LG's code changes shape.
+  static String _allowSwitchOff(String source) {
+    const String from = '''
+      } else if (v.get<bool>()) {
+        SetSwitch(args, key, "--" + key);
+      }''';
+    const String to = '''
+      } else if (v.get<bool>()) {
+        SetSwitch(args, key, "--" + key);
+      } else {
+        RemoveSwitch(args, key);  // flutter-webos: `false` turns a switch off
+      }''';
+    return source.contains(from) ? source.replaceFirst(from, to) : source;
+  }
+
   static void _copyFileIfChanged(File source, File target) {
     if (target.existsSync() && _sameContent(source, target)) {
       return;
@@ -470,7 +490,8 @@ class NativeBundle {
   /// Mirrors [source] into [target], copying only changed files. Any extra
   /// file in [target] (e.g. removed by an artifact update) triggers a clean
   /// re-copy so the tree cannot go stale.
-  static void _copyDirectoryIfChanged(Directory source, Directory target) {
+  static void _copyDirectoryIfChanged(Directory source, Directory target,
+      {Map<String, String Function(String)> transforms = const <String, String Function(String)>{}}) {
     if (target.existsSync()) {
       final sourcePaths = <String>{
         for (final FileSystemEntity entity
@@ -490,8 +511,17 @@ class NativeBundle {
         in source.listSync(recursive: true, followLinks: false)) {
       final String relative = globals.fs.path.relative(entity.path, from: source.path);
       if (entity is File) {
-        _copyFileIfChanged(
-            entity, globals.fs.file(globals.fs.path.join(target.path, relative)));
+        final File out = globals.fs.file(globals.fs.path.join(target.path, relative));
+        final String Function(String)? transform = transforms[relative];
+        if (transform != null) {
+          final String content = transform(entity.readAsStringSync());
+          if (!out.existsSync() || out.readAsStringSync() != content) {
+            out.parent.createSync(recursive: true);
+            out.writeAsStringSync(content);
+          }
+          continue;
+        }
+        _copyFileIfChanged(entity, out);
       } else if (entity is Directory) {
         globals.fs.directory(globals.fs.path.join(target.path, relative))
             .createSync(recursive: true);
@@ -559,6 +589,9 @@ class NativeBundle {
       _copyDirectoryIfChanged(
         runnerBaseSrcDir,
         flutterEphemeralDir.childDirectory('runner_base'),
+        transforms: <String, String Function(String)>{
+          'flutter_embedder_options.cc': _allowSwitchOff,
+        },
       );
 
       _copyFileIfChanged(engineBinary, flutterEphemeralDir.childFile(engineBinary.basename));
