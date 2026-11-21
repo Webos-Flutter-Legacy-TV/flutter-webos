@@ -668,7 +668,34 @@ static unsigned int timed_swap(unsigned int (*swap)(void *, void *, void *, int)
     fprintf(stderr, "[compat] first frame %.0f ms after process start\n", ms_since_process_start());
   }
   if (swap_log < 0) swap_log = shim_app_file_exists("compat-log-swap");
-  if (!swap_log) return swap(dpy, surf, rects, n);
+  if (!swap_log) {
+    // With <app dir>/compat-log-fps: time presents only (no glFinish), and
+    // every 120 animating frames log the interval between them. Gaps over
+    // 250 ms are idle time (nothing to draw) and are left out.
+    static int fps_log = -1;
+    if (fps_log < 0) fps_log = shim_app_file_exists("compat-log-fps");
+    unsigned int ok = swap(dpy, surf, rects, n);
+    if (fps_log) {
+      static double last, iv[SWAP_N];
+      static int k;
+      double t = now_ms();
+      double d = last > 0 ? t - last : 1e9;
+      last = t;
+      if (d < 250.0) {
+        iv[k] = d;
+        if (++k == SWAP_N) {
+          int over20 = 0, over33 = 0;
+          double sum = 0;
+          for (int i = 0; i < SWAP_N; i++) { sum += iv[i]; over20 += iv[i] > 20.0; over33 += iv[i] > 33.4; }
+          fprintf(stderr, "[compat] fps %.1f (interval", 1000.0 * SWAP_N / sum);
+          swap_stat("avg/p90/max ms", iv);
+          fprintf(stderr, ") frames >20ms %d, >33ms %d of %d\n", over20, over33, SWAP_N);
+          k = 0;
+        }
+      }
+    }
+    return ok;
+  }
   static void (*gl_finish)(void);
   if (!gl_finish) gl_finish = dlsym(RTLD_DEFAULT, "glFinish");
   double t0 = now_ms();
@@ -1058,7 +1085,8 @@ int _PmLogMsgKV(PmLogContext_compat ctx, int level, unsigned int flags, const ch
     real = dlsym(RTLD_NEXT, "_PmLogMsgKV");
     ctx_name = dlsym(RTLD_NEXT, "PmLogGetContextName");
   }
-  if (tap < 0) tap = shim_app_file_exists("compat-log-pmlog");
+  // compat-log-pmlog-all: every context (e.g. the engine's own messages).
+  if (tap < 0) tap = shim_app_file_exists("compat-log-pmlog-all") ? 2 : shim_app_file_exists("compat-log-pmlog");
   char buf[2048];
   va_list ap;
   va_start(ap, fmt);
@@ -1067,7 +1095,7 @@ int _PmLogMsgKV(PmLogContext_compat ctx, int level, unsigned int flags, const ch
   if (tap && ctx_name) {
     char name[64] = "";
     ctx_name(ctx, name, sizeof(name));
-    if (strstr(name, "video_player") || strstr(name, "NDL") || strstr(name, "ndl"))
+    if (tap == 2 || strstr(name, "video_player") || strstr(name, "NDL") || strstr(name, "ndl"))
       fprintf(stderr, "[pmlog %s L%d] %s %s\n", name, level, msgid ? msgid : "", buf);
   }
   return real ? real(ctx, level, flags, msgid, kv_count, check_keywords, check_formats, "%s", buf) : 0;
