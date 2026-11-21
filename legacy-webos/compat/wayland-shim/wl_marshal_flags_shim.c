@@ -713,13 +713,91 @@ unsigned int eglSwapBuffers(void *dpy, void *surf) {
   dual_after_swap(surf, target);
   return ok;
 }
+// ---- Damage regions -------------------------------------------------------
+// The embedder sends the changed area of each frame through
+// eglSetDamageRegionKHR (EGL_KHR_partial_update, which limits what the GPU
+// renders) and the swap-with-damage calls, but only when the driver
+// advertises them. Mali drivers implement them without advertising them
+// (measured on a Mali-T820, webOS 4.10, in native-jelly's
+// docs/egl-partial-update-and-damage.md). With <app dir>/compat-egl-damage the
+// extension string lists them when their entry points resolve
+// (eglQueryString below). Either way, the declared area is logged.
+static int egl_damage_on(void) {
+  static int on = -1;
+  if (on < 0) on = shim_app_file_exists("compat-egl-damage");
+  return on;
+}
+static double dmg_frac_sum;
+static int dmg_n, dmg_full;
+static void damage_note(const int *rects, int n, const char *via) {
+  // rects: n x (x, y, w, h); the fraction of a 1920x1080 frame they cover
+  // (overlaps counted twice: an upper bound).
+  double area = 0;
+  for (int i = 0; rects && i < n; i++) area += (double)rects[4 * i + 2] * rects[4 * i + 3];
+  double frac = n > 0 ? area / (1920.0 * 1080.0) : 1.0;
+  if (frac > 1) frac = 1;
+  dmg_frac_sum += frac;
+  if (frac >= 0.999) dmg_full++;
+  if (++dmg_n == 120) {
+    fprintf(stderr, "[compat] damage (%s): average %.0f%% of the frame, %d of 120 full\n", via,
+            100 * dmg_frac_sum / dmg_n, dmg_full);
+    dmg_n = 0;
+    dmg_full = 0;
+    dmg_frac_sum = 0;
+  }
+}
+static unsigned int (*real_set_damage)(void *, void *, int *, int);
+static unsigned int set_damage_region(void *dpy, void *surf, int *rects, int n) {
+  damage_note(rects, n, "eglSetDamageRegionKHR");
+  return real_set_damage(dpy, dual_map(surf), rects, n);
+}
+
+__attribute__((visibility("default")))
+const char *eglQueryString(void *dpy, int name) {
+  static const char *(*real)(void *, int);
+  if (!real) real = dlsym(RTLD_NEXT, "eglQueryString");
+  const char *s = real(dpy, name);
+  if (name != 0x3055 /* EGL_EXTENSIONS */ || !s || !dpy) return s;
+  static int logged;
+  if (!logged) {
+    logged = 1;
+    fprintf(stderr, "[compat] EGL extensions: %s\n", s);
+  }
+  if (!egl_damage_on()) return s;
+  static char *ext;
+  if (!ext) {
+    void *(*gpa)(const char *) = dlsym(RTLD_NEXT, "eglGetProcAddress");
+    static const char *const add[][2] = {
+        {"EGL_KHR_partial_update", "eglSetDamageRegionKHR"},
+        {"EGL_KHR_swap_buffers_with_damage", "eglSwapBuffersWithDamageKHR"},
+    };
+    size_t len = strlen(s) + 128;
+    ext = malloc(len);
+    if (!ext) return s;
+    snprintf(ext, len, "%s", s);
+    for (size_t i = 0; i < sizeof(add) / sizeof(add[0]); i++) {
+      if (strstr(s, add[i][0])) continue;
+      if (!gpa || !gpa(add[i][1])) {
+        fprintf(stderr, "[compat] compat-egl-damage: %s not in the driver, not added\n", add[i][1]);
+        continue;
+      }
+      strncat(ext, " ", len - strlen(ext) - 1);
+      strncat(ext, add[i][0], len - strlen(ext) - 1);
+      fprintf(stderr, "[compat] compat-egl-damage: advertising %s\n", add[i][0]);
+    }
+  }
+  return ext;
+}
+
 static unsigned int swap_damage_khr(void *dpy, void *surf, void *rects, int n) {
+  damage_note(rects, n, "swap with damage");
   void *target = dual_map_swap(surf);
   unsigned int ok = timed_swap(call_khr, dpy, target, rects, n);
   dual_after_swap(surf, target);
   return ok;
 }
 static unsigned int swap_damage_ext(void *dpy, void *surf, void *rects, int n) {
+  damage_note(rects, n, "swap with damage");
   void *target = dual_map_swap(surf);
   unsigned int ok = timed_swap(call_ext, dpy, target, rects, n);
   dual_after_swap(surf, target);
@@ -744,6 +822,10 @@ void *eglGetProcAddress(const char *name) {
   if (!strcmp(name, "eglSwapBuffers")) {
     real_swap = p;
     return (void *)eglSwapBuffers;
+  }
+  if (!strcmp(name, "eglSetDamageRegionKHR")) {
+    real_set_damage = p;
+    return (void *)set_damage_region;
   }
   return p;
 }

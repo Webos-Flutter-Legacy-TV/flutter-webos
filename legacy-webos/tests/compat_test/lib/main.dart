@@ -283,6 +283,108 @@ class PerfStats {
   }
 }
 
+// A TV-style poster grid: focus moves every 250 ms and the focused card
+// scales up with a glow, so a small part of the screen changes per frame (the
+// case damage regions help). [scroll] also slides the row of the focused card
+// so it stays in view, which changes most of the screen instead.
+class GridFocusPage extends StatefulWidget {
+  const GridFocusPage({super.key, required this.seconds, required this.onDone, this.scroll = false});
+  final int seconds;
+  final bool scroll;
+  final void Function(String summary) onDone;
+
+  @override
+  State<GridFocusPage> createState() => _GridFocusPageState();
+}
+
+class _GridFocusPageState extends State<GridFocusPage> {
+  static const rows = 4, cols = 7, cardW = 230.0, cardH = 330.0, gap = 28.0;
+  final _stats = PerfStats();
+  final _sw = Stopwatch();
+  Timer? _timer, _step;
+  int _focus = 0, _offset = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    SchedulerBinding.instance.addTimingsCallback(_stats.add);
+    _sw.start();
+    _step = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      setState(() {
+        _focus = (_focus + 1) % (rows * cols);
+        if (widget.scroll) _offset = (_offset + 1) % cols;
+      });
+    });
+    _timer = Timer(Duration(seconds: widget.seconds), () {
+      _step?.cancel();
+      SchedulerBinding.instance.removeTimingsCallback(_stats.add);
+      widget.onDone(_stats.summary(_sw.elapsed));
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _step?.cancel();
+    super.dispose();
+  }
+
+  Widget _card(int i) {
+    final focused = i == _focus;
+    return AnimatedScale(
+      scale: focused ? 1.12 : 1.0,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        width: cardW,
+        height: cardH,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [
+            HSVColor.fromAHSV(1, (i * 23) % 360, .55, .75).toColor(),
+            HSVColor.fromAHSV(1, (i * 23 + 60) % 360, .65, .35).toColor(),
+          ]),
+          border: Border.all(color: focused ? Colors.white : Colors.transparent, width: 4),
+          boxShadow: focused
+              ? [BoxShadow(color: Colors.white.withValues(alpha: 0.45), blurRadius: 24, spreadRadius: 2)]
+              : const [],
+        ),
+        alignment: Alignment.bottomLeft,
+        padding: const EdgeInsets.all(12),
+        child: Text('Title $i', style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF101018),
+      body: Padding(
+        padding: const EdgeInsets.fromLTRB(80, 60, 0, 0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var r = 0; r < rows; r++)
+              SizedBox(
+                height: cardH + gap,
+                child: AnimatedSlide(
+                  offset: Offset(widget.scroll && r == _focus ~/ cols ? -_offset * (cardW + gap) / 1760 : 0, 0),
+                  duration: const Duration(milliseconds: 220),
+                  child: Row(children: [
+                    for (var c = 0; c < cols; c++)
+                      Padding(padding: const EdgeInsets.only(right: gap), child: _card(r * cols + c)),
+                  ]),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class StressPage extends StatefulWidget {
   const StressPage({super.key, required this.tiles, required this.seconds, required this.onDone});
   final int tiles;
@@ -543,6 +645,8 @@ class _RunnerState extends State<Runner> {
       await _stressRun('perf.scroll_plain',
           (done) => ScrollStressPage(seconds: 8, mode: 'plain', pxPerSec: 600, onDone: done));
       await _stressRun('perf.tiles64', (done) => StressPage(tiles: 64, seconds: 8, onDone: done));
+      await _stressRun('perf.grid_focus', (done) => GridFocusPage(seconds: 8, onDone: done));
+      await _stressRun('perf.grid_scroll', (done) => GridFocusPage(seconds: 8, scroll: true, onDone: done));
     }
     final fails = results.where((r) => r.status == 'FAIL').length;
     report('run', 'INFO', 'done, ${results.length} results, $fails failed');

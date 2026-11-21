@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Build + run tests/compat_test with a given render configuration and print
-# its [T] results. Usage: tools/perf-variant.sh <label> [resolution] [impeller]
+# its [T] results. Usage: tools/perf-variant.sh <label> [resolution] [impeller] [swap0] [switches]
 #   resolution: e.g. 1920x1080 (empty = embedder default)
 #   impeller:   true|false (default false)
+#   switches:   space-separated webos/meta switch files to add for this run,
+#               e.g. "compat-egl-damage compat-dual-surface"
 set -euo pipefail
 FW="$(cd "$(dirname "$0")/.." && pwd)"
-LABEL="$1"; RES="${2:-}"; IMP="${3:-false}"; SWAP0="${4:-false}"
+LABEL="$1"; RES="${2:-}"; IMP="${3:-false}"; SWAP0="${4:-false}"; SWITCHES="${5:-}"
 APP="$FW/tests/compat_test"
 . "$FW/env.sh"
 
@@ -29,7 +31,12 @@ EOF
 
 (cd "$APP" && flutter-webos build webos --release >/dev/null 2>&1)
 : > "$APP/webos/meta/compat-perf"
-trap 'rm -f "$APP/webos/meta/compat-perf" "$APP/webos/meta/compat-swap0"' EXIT
+for sw in $SWITCHES; do : > "$APP/webos/meta/$sw"; done
+cleanup() {
+  rm -f "$APP/webos/meta/compat-perf" "$APP/webos/meta/compat-swap0"
+  for sw in $SWITCHES; do rm -f "$APP/webos/meta/$sw"; done
+}
+trap cleanup EXIT
 if [ "$SWAP0" = true ]; then : > "$APP/webos/meta/compat-swap0"; else rm -f "$APP/webos/meta/compat-swap0"; fi
 (cd "$APP" && flutter-webos build webos --release >/dev/null 2>&1)
 "$FW/tools/dev-cycle.sh" "$APP" 2 --luna >/dev/null 2>&1 || true
@@ -39,5 +46,5 @@ for _ in $(seq 1 30); do
   sleep 5
   "${SSH[@]}" "grep -q 'run INFO done' $D/compat_results.log 2>/dev/null" && break
 done
-echo "=== $LABEL (resolution=${RES:-default}, impeller=$IMP, swap0=$SWAP0)"
-"${SSH[@]}" "grep -E 'perf|FAIL|rss|done' $D/compat_results.log; grep -iE 'impeller|skia|size|resolution|SwapInterval' $D/compat.log | grep -v egl_unified | head -5"
+echo "=== $LABEL (resolution=${RES:-default}, impeller=$IMP, swap0=$SWAP0, switches=${SWITCHES:-none})"
+"${SSH[@]}" "grep -E 'perf|FAIL|rss|done' $D/compat_results.log; grep -iE 'impeller|skia|size|resolution|SwapInterval|first frame|EGL extensions|compat-egl-damage|damage \\(' $D/compat.log | grep -v egl_unified | cut -c1-400 | head -14"
