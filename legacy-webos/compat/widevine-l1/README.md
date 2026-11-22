@@ -74,6 +74,10 @@ headers are in `third_party/cdm`.
 >
 > Use it only to test on your own TV, with content you are entitled to
 > play. Get legal advice before anything else.
+>
+> On 21 November 2026 we asked Google (Widevine) and LG whether there is
+> an approved way to do this, and offered to remove the route if they
+> object. We are waiting for their replies.
 
 ## Status (webOS 6.5.3, LG C1)
 

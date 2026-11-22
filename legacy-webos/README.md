@@ -194,6 +194,10 @@ HLS, period changes in live streams. Details, debug options and status:
 >
 > Use it only to test on your own TV, with content you are entitled to
 > play. Get legal advice before anything else.
+>
+> On 21 November 2026 we asked Google (Widevine) and LG whether there is
+> an approved way to do this, and offered to remove the route if they
+> object. We are waiting for their replies.
 
 An earlier software route (`compat-widevine-cdm`, L3) was removed on
 21 November 2026: it decrypted the media inside the app and served it clear
