@@ -15,7 +15,7 @@ tag on both.
   Checked on webOS 6.5.3 with the test apps built with the defaults:
   compat 14/14, plugins 15/15, soloud 21/21, input (keys, Back), video
   (every stage visible; the 2x-to-1x step fails as it does with Skia),
-  drm (same results as Skia; clear HLS needs plugins 38523d2), L1 Widevine
+  drm (same results as Skia; clear HLS needs plugins b1998ca), L1 Widevine
   4K playing on screen.
 - `docs/PERFORMANCE.md`: how to measure an app on the TV and what made frames
   expensive (blurred shadows, full-screen translucent layers, oversized

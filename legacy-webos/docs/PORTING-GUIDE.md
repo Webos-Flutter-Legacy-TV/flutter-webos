@@ -52,7 +52,7 @@ Renderer: legacy packages use Impeller with two window surfaces unless the
 app says otherwise (`"enable-impeller": false` in
 `webos/meta/flutter-conf.json`, or an empty `webos/meta/compat-single-surface`).
 Together they halve GPU time per frame on webOS 6. Apps with `video_player`
-need the plugins fork (7a53a97 or later; `video_player_drm` 38523d2 or later),
+need the plugins fork (7a53a97 or later; `video_player_drm` b1998ca or later),
 which keeps a moved or resized video visible. See the README section "Renderer and frame rate", and
 [PERFORMANCE.md](PERFORMANCE.md) to measure your app and for what makes
 frames expensive on these TVs.
