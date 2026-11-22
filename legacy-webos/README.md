@@ -118,7 +118,9 @@ Raster time per frame with Impeller drops from ~17 ms to ~7 ms with
 `compat-dual-surface`, leaving headroom for heavier frames.
 
 - **Enable Impeller**, including for apps with `video_player` when they use
-  the Webos-Flutter-Legacy-TV plugins fork (7a53a97 or later). All plugin,
+  the Webos-Flutter-Legacy-TV plugins fork (7a53a97 or later; `video_player_drm`
+  needs 38523d2 or later, without which a video resized after it starts, such
+  as clear HLS, stays black). All plugin,
   DRM-licence and input tests pass with it. A moved or resized video used to
   stay hidden (always with Impeller, about half the time with Skia): the
   placement sent while the video moves reaches the compositor while the area

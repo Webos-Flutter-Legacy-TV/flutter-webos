@@ -12,6 +12,11 @@ tag on both.
   `"enable-impeller": false` or `webos/meta/compat-single-surface`). In a
   Jellyfin client on webOS 6.5.3 this halved GPU time per frame (17.5 to
   10 ms); the Movies grid went from about 29 to 60 frames per second.
+  Checked on webOS 6.5.3 with the test apps built with the defaults:
+  compat 14/14, plugins 15/15, soloud 21/21, input (keys, Back), video
+  (every stage visible; the 2x-to-1x step fails as it does with Skia),
+  drm (same results as Skia; clear HLS needs plugins 38523d2), L1 Widevine
+  4K playing on screen.
 - `docs/PERFORMANCE.md`: how to measure an app on the TV and what made frames
   expensive (blurred shadows, full-screen translucent layers, oversized
   images); what did not help (damage regions).

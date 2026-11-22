@@ -110,18 +110,18 @@ p = sys.argv[1]
 d = json.load(open(p)) if os.path.exists(p) else {}
 sw = d.setdefault("engine-switches", {})
 if "enable-impeller" in sw:
-    print("renderer: Impeller %s (flutter-conf.json)" % ("on" if sw["enable-impeller"] is True else "off"))
+    print("renderer: Impeller %s (flutter-conf.json)" % ("on" if sw["enable-impeller"] is True else "off"), file=sys.stderr)
 else:
     sw["enable-impeller"] = True
     json.dump(d, open(p, "w"), indent=2)
-    print("renderer: Impeller on (legacy default; \"enable-impeller\": false in flutter-conf.json turns it off)")
+    print("renderer: Impeller on (legacy default; \"enable-impeller\": false in flutter-conf.json turns it off)", file=sys.stderr)
 EOF
 if [ -e "$STAGE/compat-single-surface" ]; then
   rm -f "$STAGE/compat-dual-surface" "$STAGE/compat-single-surface"
-  echo "renderer: one window surface (compat-single-surface)"
+  echo "renderer: one window surface (compat-single-surface)" >&2
 elif [ ! -e "$STAGE/compat-dual-surface" ]; then
   : > "$STAGE/compat-dual-surface"
-  echo "renderer: two window surfaces (legacy default; webos/meta/compat-single-surface turns it off)"
+  echo "renderer: two window surfaces (legacy default; webos/meta/compat-single-surface turns it off)" >&2
 fi
 for f in "$STAGE"/lib/*.so; do
   "$PATCHELF" --force-rpath --set-rpath '$ORIGIN/compat:$ORIGIN' "$f"
