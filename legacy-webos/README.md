@@ -311,7 +311,7 @@ the key is not `~/.ssh/lg_webos`.
 | `tools/build-shims.sh` | Build the shims and `tv-key` (called by the packager) |
 | `tools/dev-cycle.sh <app> [secs] [--luna]` | Package, install, run, print `compat.log` |
 | `tools/webos-survey.sh` | Read-only survey of a TV's kernel, glibc, graphics and webOS libraries |
-| `tools/tv-install.sh`, `tools/tv-shot.sh` | Install an IPK; take a screenshot |
+| `tools/tv-install.sh`, `tools/tv-shot.sh` | Install an IPK; take a screenshot. DRM-protected video (PlayReady, Widevine L1) always captures as black even while it plays, and clear video sometimes does: check those by eye, or by the position advancing |
 | `tools/tv-key/tv-key.c` | Inject remote key presses into evdev |
 | `tools/perf-variant.sh` | Run `tests/compat_test` with a resolution / Impeller setting |
 | `tools/perf-summary.py` | Summarise a `compat.log` from `legacy_perf_probe` or `compat-log-fps` (frame, key and image timings) |
