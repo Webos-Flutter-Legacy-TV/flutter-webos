@@ -5,7 +5,7 @@ Releases are tagged `legacy-vX.Y.Z` on both
 [plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins); use the same
 tag on both.
 
-## Unreleased
+## legacy-v0.2.0 (2026-11-22)
 
 - Performance defaults: legacy packages turn on Impeller and two window
   surfaces (`compat-dual-surface`) unless the app sets them (opt out with
