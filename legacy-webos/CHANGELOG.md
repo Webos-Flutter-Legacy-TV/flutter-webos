@@ -5,6 +5,20 @@ Releases are tagged `legacy-vX.Y.Z` on both
 [plugins](https://github.com/Webos-Flutter-Legacy-TV/plugins); use the same
 tag on both.
 
+## Unreleased
+
+- Magic Remote pointer, clicks and wheel now reach Flutter apps on webOS 6.
+  The compositor offers several unnamed `wl_seat`s and LG's embedder listened
+  on the first seat's pointer only (the USB mouse seat), while the remote's
+  events arrive on another seat. The shim gives every `wl_pointer` the
+  embedder creates the embedder's listener; `compat-pointer-one-seat` turns
+  it off. Checked on webOS 6.5.3 with `tests/input_test` and a real remote:
+  hover, press/release and scroll events in Flutter, and the system arrow
+  cursor over the app.
+- Shim switches `compat-log-pointer` (pointer events and input requests) and
+  `compat-wayland-debug` (libwayland protocol trace).
+- `tests/input_test` logs the pointer events Flutter receives.
+
 ## legacy-v0.2.0 (2026-11-22)
 
 - Performance defaults: legacy packages turn on Impeller and two window

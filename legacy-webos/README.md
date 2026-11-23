@@ -44,6 +44,7 @@ order, everything that stopped it from starting on webOS 6:
 | `wl_webos_shell` v2 requested, compositor offers v1 | Shim records advertised versions and clamps binds |
 | Back key never delivered to the app | Shim sets `_WEBOS_ACCESS_POLICY_KEYS_BACK` on the shell surface |
 | The embedder turns the remote's Back (evdev 412) into an Escape key, which Flutter does not treat as navigation | Shim sends `popRoute` on `flutter/navigation` instead, like Android, using the engine handle captured from `FlutterEngineGetProcAddresses` |
+| Magic Remote pointer and wheel never reach the app: webOS 6 offers several `wl_seat`s (USB mouse, Magic Remote, ...) without names, so LG's embedder listens on the first seat's `wl_pointer` only, and the remote's events arrive on another seat, where libwayland drops them | Shim gives every `wl_pointer` the embedder creates the embedder's listener (like flutter-embedded-linux's multi-seat fix, sony/flutter-embedded-linux#417); `compat-pointer-one-seat` turns this off |
 | Some firmware has only the vendor `libwayland-egl.so.0`, other only `.so.1` | Bundled `libwayland-egl.so.1` (`compat/wayland-egl-forward`) forwards to whichever the TV has |
 | The Mali driver gives each window two buffers and the compositor returns the shown one only once the next is on screen, so `eglMakeCurrent` blocks ~10 ms per frame, leaving ~7 ms to render | Opt-in (`compat-dual-surface`): the shim gives the window a second EGL surface on the same Wayland surface and alternates frames (four buffers), converting Mali's per-surface buffer age for the embedder's partial redraw, and uses the window's own surface while media is loaded. See "Renderer and frame rate" for the known issue |
 | NDL has no `NDL_MediaInitWithWindowId`; old NDL takes its window from SDL, even for audio | `compat/ndl-sdl-shim`: a stand-in `libSDL2-2.0.so.0` that hands NDL Flutter's exported window, or a placeholder for audio-only players (added when any bundled library links `libNDL_media`) |
@@ -337,6 +338,10 @@ frames: GPU time, time blocked in the swap and between presents, waits over
 `compat-dual-surface` (alternate two EGL surfaces, see "Renderer and frame rate";
 legacy default) and `compat-single-surface` (turn that default off),
 `compat-log-exported` (video window placement requests and their regions),
+`compat-log-pointer` (seat capabilities, every pointer event, motion every
+20th, and input-related requests), `compat-wayland-debug` (libwayland's own
+protocol trace; LG's libwayland writes it to `/tmp/wayland_<process>_<pid>.log`
+in the app's jail, `/var/palm/jail/<app id>/tmp/`, not to stderr),
 `compat-swap0` (EGL swap interval 0; no effect on webOS 6.5.3, whose Mali
 configs only allow interval 0). In `tests/compat_test`, `compat-perf` adds
 the frame-timing scenes (`tools/perf-variant.sh` sets it).

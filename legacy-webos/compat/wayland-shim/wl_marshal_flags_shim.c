@@ -33,7 +33,8 @@ __attribute__((constructor)) static void shim_redirect_output(void) {
   ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
   if (n <= 0) return;
   exe[n] = '\0';
-  snprintf(path, sizeof(path), "%s/compat.log", dirname(exe));
+  const char *dir = dirname(exe);
+  snprintf(path, sizeof(path), "%s/compat.log", dir);
   int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
   if (fd < 0) return;
   dup2(fd, 1);
@@ -43,6 +44,13 @@ __attribute__((constructor)) static void shim_redirect_output(void) {
   time_t t = time(NULL);
   fprintf(stderr, "=== compat start pid=%d uid=%d %s", (int)getpid(), (int)getuid(),
           ctime(&t));
+  // compat-wayland-debug: libwayland's own protocol trace. LG's libwayland
+  // writes it to /tmp/wayland_<process>_<pid>.log (the jail's /tmp).
+  snprintf(path, sizeof(path), "%s/compat-wayland-debug", dir);
+  if (access(path, F_OK) == 0) {
+    setenv("WAYLAND_DEBUG", "client", 1);
+    fprintf(stderr, "[compat] WAYLAND_DEBUG=client\n");
+  }
 }
 
 // Every libwayland version lays out struct wl_proxy with struct wl_object
@@ -299,6 +307,115 @@ static void shim_buf_release(void *data, struct wl_proxy *buf) {
 }
 static void (*const shim_buf_listener[1])(void *, struct wl_proxy *) = {shim_buf_release};
 
+// Pointer tracing (with <app dir>/compat-log-pointer): log the wl_seat
+// capabilities and every wl_pointer event (motion every 20th) before the
+// embedder sees it.
+typedef void (*shim_fn)(void);
+static shim_fn g_ptr_user[11], g_ptr_wrap[11], g_seat_user[2];
+#define PTR_FIX(f) ((f) / 256.0)
+#define PTR_CALL(i, T, ...) do { if (g_ptr_user[i]) ((T)g_ptr_user[i])(__VA_ARGS__); } while (0)
+typedef void (*ptr_v)(void *, struct wl_proxy *);
+typedef void (*ptr_u)(void *, struct wl_proxy *, uint32_t);
+typedef void (*ptr_uu)(void *, struct wl_proxy *, uint32_t, uint32_t);
+typedef void (*ptr_ui)(void *, struct wl_proxy *, uint32_t, int32_t);
+typedef void (*ptr_uui)(void *, struct wl_proxy *, uint32_t, uint32_t, int32_t);
+typedef void (*ptr_uii)(void *, struct wl_proxy *, uint32_t, int32_t, int32_t);
+typedef void (*ptr_uuuu)(void *, struct wl_proxy *, uint32_t, uint32_t, uint32_t, uint32_t);
+typedef void (*ptr_enter)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *, int32_t, int32_t);
+typedef void (*ptr_leave)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *);
+static void lp_enter(void *d, struct wl_proxy *p, uint32_t s, struct wl_proxy *surf, int32_t x, int32_t y) {
+  fprintf(stderr, "[compat] pointer enter %.1f,%.1f\n", PTR_FIX(x), PTR_FIX(y));
+  PTR_CALL(0, ptr_enter, d, p, s, surf, x, y);
+}
+static void lp_leave(void *d, struct wl_proxy *p, uint32_t s, struct wl_proxy *surf) {
+  fprintf(stderr, "[compat] pointer leave\n");
+  PTR_CALL(1, ptr_leave, d, p, s, surf);
+}
+static void lp_motion(void *d, struct wl_proxy *p, uint32_t t, int32_t x, int32_t y) {
+  static unsigned n;
+  if (n++ % 20 == 0) fprintf(stderr, "[compat] pointer motion %.1f,%.1f (#%u)\n", PTR_FIX(x), PTR_FIX(y), n);
+  PTR_CALL(2, ptr_uii, d, p, t, x, y);
+}
+static void lp_button(void *d, struct wl_proxy *p, uint32_t s, uint32_t t, uint32_t b, uint32_t st) {
+  fprintf(stderr, "[compat] pointer button 0x%x state %u\n", b, st);
+  PTR_CALL(3, ptr_uuuu, d, p, s, t, b, st);
+}
+static void lp_axis(void *d, struct wl_proxy *p, uint32_t t, uint32_t a, int32_t v) {
+  fprintf(stderr, "[compat] pointer axis %u value %.2f\n", a, PTR_FIX(v));
+  PTR_CALL(4, ptr_uui, d, p, t, a, v);
+}
+static void lp_frame(void *d, struct wl_proxy *p) { PTR_CALL(5, ptr_v, d, p); }
+static void lp_axis_source(void *d, struct wl_proxy *p, uint32_t s) {
+  fprintf(stderr, "[compat] pointer axis_source %u\n", s);
+  PTR_CALL(6, ptr_u, d, p, s);
+}
+static void lp_axis_stop(void *d, struct wl_proxy *p, uint32_t t, uint32_t a) {
+  fprintf(stderr, "[compat] pointer axis_stop %u\n", a);
+  PTR_CALL(7, ptr_uu, d, p, t, a);
+}
+static void lp_axis_discrete(void *d, struct wl_proxy *p, uint32_t a, int32_t v) {
+  fprintf(stderr, "[compat] pointer axis_discrete %u %d\n", a, v);
+  PTR_CALL(8, ptr_ui, d, p, a, v);
+}
+static void lp_axis_value120(void *d, struct wl_proxy *p, uint32_t a, int32_t v) { PTR_CALL(9, ptr_ui, d, p, a, v); }
+static void lp_axis_dir(void *d, struct wl_proxy *p, uint32_t a, uint32_t v) { PTR_CALL(10, ptr_uu, d, p, a, v); }
+static const shim_fn shim_ptr_log[11] = {
+    (shim_fn)lp_enter, (shim_fn)lp_leave, (shim_fn)lp_motion, (shim_fn)lp_button,
+    (shim_fn)lp_axis, (shim_fn)lp_frame, (shim_fn)lp_axis_source, (shim_fn)lp_axis_stop,
+    (shim_fn)lp_axis_discrete, (shim_fn)lp_axis_value120, (shim_fn)lp_axis_dir};
+// Pointers on every seat. The compositor on webOS 6 offers several wl_seats
+// (USB mouse, Magic Remote, ...) and sends no wl_seat.name, so LG's embedder
+// takes the first seat as its default and adds its pointer listener only to
+// that seat's wl_pointer. The Magic Remote's events arrive on another seat,
+// on a wl_pointer with no listener, and libwayland drops them. The shim gives
+// every wl_pointer the embedder creates the embedder's listener and data.
+// <app dir>/compat-pointer-one-seat turns this off.
+#define SEAT_PTR_MAX 8
+static struct wl_proxy *g_seat_ptrs[SEAT_PTR_MAX];
+static int g_seat_ptr_has[SEAT_PTR_MAX], g_n_seat_ptrs;
+static void (**g_ptr_impl)(void);
+static void *g_ptr_data;
+static int all_seats_on(void) {
+  static int on = -1;
+  if (on < 0) on = !shim_app_file_exists("compat-pointer-one-seat");
+  return on;
+}
+static void shim_attach_seat_ptrs(void) {
+  static int (*add)(struct wl_proxy *, void (**)(void), void *);
+  if (!add) add = dlsym(RTLD_NEXT, "wl_proxy_add_listener");
+  if (!g_ptr_impl || !add) return;
+  for (int i = 0; i < g_n_seat_ptrs; i++) {
+    if (g_seat_ptr_has[i]) continue;
+    g_seat_ptr_has[i] = 1;
+    if (add(g_seat_ptrs[i], g_ptr_impl, g_ptr_data) == 0)
+      fprintf(stderr, "[compat] pointer listener added to wl_pointer %p (seat pointer %d)\n",
+              (void *)g_seat_ptrs[i], i);
+  }
+}
+static void shim_note_seat_ptr(struct wl_proxy *ptr) {
+  if (!all_seats_on() || g_n_seat_ptrs >= SEAT_PTR_MAX) return;
+  g_seat_ptrs[g_n_seat_ptrs] = ptr;
+  g_seat_ptr_has[g_n_seat_ptrs++] = 0;
+  shim_attach_seat_ptrs();
+}
+static void shim_note_ptr_listener(struct wl_proxy *ptr, void (**impl)(void), void *data) {
+  if (!all_seats_on()) return;
+  for (int i = 0; i < g_n_seat_ptrs; i++)
+    if (g_seat_ptrs[i] == ptr) g_seat_ptr_has[i] = 1;
+  if (!g_ptr_impl) { g_ptr_impl = impl; g_ptr_data = data; }
+  shim_attach_seat_ptrs();
+}
+static void ls_caps(void *d, struct wl_proxy *s, uint32_t caps) {
+  fprintf(stderr, "[compat] wl_seat %p capabilities 0x%x (pointer %d keyboard %d touch %d)\n",
+          (void *)s, caps, !!(caps & 1), !!(caps & 2), !!(caps & 4));
+  if (g_seat_user[0]) ((ptr_u)g_seat_user[0])(d, s, caps);
+}
+static void ls_name(void *d, struct wl_proxy *s, const char *name) {
+  fprintf(stderr, "[compat] wl_seat name %s\n", name);
+  if (g_seat_user[1]) ((void (*)(void *, struct wl_proxy *, const char *))g_seat_user[1])(d, s, name);
+}
+static const shim_fn shim_seat_log[2] = {(shim_fn)ls_caps, (shim_fn)ls_name};
+
 __attribute__((visibility("default")))
 int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
                           void *data) {
@@ -324,6 +441,28 @@ int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void),
     g_kb_wrap = g_kb_user;
     g_kb_wrap.key = shim_kb_key;
     return real(proxy, (void (**)(void))&g_kb_wrap, data);
+  }
+  if (strcmp(wl_proxy_get_class(proxy), "wl_pointer") == 0 && !shim_app_file_exists("compat-log-pointer")) {
+    int r = real(proxy, implementation, data);
+    if (r == 0) shim_note_ptr_listener(proxy, implementation, data);
+    return r;
+  }
+  if (strcmp(wl_proxy_get_class(proxy), "wl_pointer") == 0 && shim_app_file_exists("compat-log-pointer")) {
+    // wl_pointer v1-v4 has 5 events; v5 adds frame, axis_source, axis_stop,
+    // axis_discrete; v8 axis_value120; v9 axis_relative_direction.
+    uint32_t v = wl_proxy_get_version(proxy);
+    size_t n = v >= 9 ? 11 : v >= 8 ? 10 : v >= 5 ? 9 : 5;
+    memcpy(g_ptr_user, implementation, n * sizeof(void *));
+    memcpy(g_ptr_wrap, shim_ptr_log, sizeof(g_ptr_wrap));
+    fprintf(stderr, "[compat] wl_pointer %p v%u (%zu events)\n", (void *)proxy, v, n);
+    int r = real(proxy, (void (**)(void))g_ptr_wrap, data);
+    if (r == 0) shim_note_ptr_listener(proxy, (void (**)(void))g_ptr_wrap, data);
+    return r;
+  }
+  if (strcmp(wl_proxy_get_class(proxy), "wl_seat") == 0 && shim_app_file_exists("compat-log-pointer")) {
+    fprintf(stderr, "[compat] wl_seat %p v%u\n", (void *)proxy, wl_proxy_get_version(proxy));
+    memcpy(g_seat_user, implementation, 2 * sizeof(void *));
+    return real(proxy, (void (**)(void))shim_seat_log, data);
   }
   if (strcmp(wl_proxy_get_class(proxy), "wl_registry") == 0) {
     struct shim_registry_wrap *w = malloc(sizeof(*w));  // lives as long as the registry
@@ -1021,8 +1160,16 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
   // window objects (video plane placement).
   static int log_exported = -1;
   if (log_exported < 0) log_exported = shim_app_file_exists("compat-log-exported");
-  if (log_exported && (strstr(iface->name, "export") || strstr(iface->name, "foreign") ||
-                       !strcmp(iface->name, "wl_region"))) {
+  // With compat-log-pointer, also input-related requests: input regions,
+  // webOS shell surface, input manager, seat and pointer.
+  static int log_ptr_req = -1;
+  if (log_ptr_req < 0) log_ptr_req = shim_app_file_exists("compat-log-pointer");
+  if ((log_exported && (strstr(iface->name, "export") || strstr(iface->name, "foreign") ||
+                        !strcmp(iface->name, "wl_region"))) ||
+      (log_ptr_req && (!strcmp(iface->name, "wl_region") ||
+                       (!strcmp(iface->name, "wl_surface") && opcode == 5) ||
+                       strstr(iface->name, "webos_shell") || strstr(iface->name, "input_manager") ||
+                       strstr(iface->name, "seat") || strstr(iface->name, "pointer")))) {
     char line[512];
     int len = snprintf(line, sizeof(line), "[compat] %s.%s v%u (", iface->name,
                        iface->methods[opcode].name, wl_proxy_get_version(proxy));
@@ -1047,6 +1194,9 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
   } else {
     shim_marshal(proxy, opcode, args);
   }
+
+  if (new_proxy && opcode == 0 && !strcmp(iface->name, "wl_seat"))
+    shim_note_seat_ptr(new_proxy);
 
   if (!strcmp(iface->name, "wl_webos_exported") &&
       (!strcmp(iface->methods[opcode].name, "set_crop_region") ||

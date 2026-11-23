@@ -5,6 +5,7 @@
 // first pops to the home page; Back on the home page lets the app exit.
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -25,6 +26,18 @@ void main() {
     return false; // let Flutter handle it normally too
   });
   WidgetsBinding.instance.addObserver(_Observer());
+  // Pointer events as Flutter receives them (Magic Remote pointer, buttons,
+  // wheel): every event except hover/move, which is logged every 20th.
+  var moves = 0;
+  GestureBinding.instance.pointerRouter.addGlobalRoute((PointerEvent e) {
+    final isMove = e is PointerHoverEvent || e is PointerMoveEvent;
+    if (isMove && moves++ % 20 != 0) return;
+    final extra = e is PointerScrollEvent
+        ? ' scroll=${e.scrollDelta.dx.toStringAsFixed(0)},${e.scrollDelta.dy.toStringAsFixed(0)}'
+        : '';
+    log('pointer ${e.runtimeType} kind=${e.kind.name} at ${e.position.dx.toStringAsFixed(0)},'
+        '${e.position.dy.toStringAsFixed(0)} buttons=${e.buttons}$extra${isMove ? ' (#$moves)' : ''}');
+  });
   runApp(const MaterialApp(home: HomePage()));
 }
 
